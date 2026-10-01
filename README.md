@@ -61,6 +61,14 @@ dotnet iimmpact-quality check MyApp.slnx    # fails on growth or stale entries
 
 Tag `v<version>` where `<version>` equals the `<Version>` in `Directory.Build.props`. The release workflow verifies the tag, packs both packages, publishes to nuget.org via `NuGet/login` OIDC, and creates the GitHub release.
 
+To retry an existing release without moving its tag, run:
+
+```bash
+gh workflow run release.yml --ref main -f tag=v0.1.0
+```
+
+Both triggers build from the tag, not the current branch. Publishing runs for the same tag are serialized, and packages already published are skipped.
+
 ## License
 
 MIT — IIMMPACT SDN BHD.
