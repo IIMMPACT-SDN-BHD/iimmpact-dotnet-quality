@@ -1,0 +1,16 @@
+<Project>
+
+  <PropertyGroup>
+    <!-- Report IDE0051/IDE0052/IDE0060 and other code-style diagnostics during build. -->
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <GlobalAnalyzerConfigFiles Include="$(MSBuildThisFileDirectory)IIMMPACT.CodeQuality.globalconfig" />
+    <!-- SonarLint.xml sets S134/S138/S104 thresholds. CodeMetricsConfig.txt sets CA1502/CA1506 limits. BannedSymbols feeds RS0030. -->
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)SonarLint.xml" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)CodeMetricsConfig.txt" />
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.IIMMPACT.txt" />
+  </ItemGroup>
+
+</Project>

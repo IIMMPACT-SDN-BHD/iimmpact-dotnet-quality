@@ -1,0 +1,19 @@
+<Project>
+
+  <!--
+    When a consumer passes -p:IimmpactQualitySarif=true, the compiler writes a SARIF
+    diagnostics log per project and target framework. iimmpact-quality reads these.
+    The directory lives under obj/iimmpact-quality so the tool can delete it before
+    each build and detect which projects produced logs.
+  -->
+  <PropertyGroup Condition="'$(IimmpactQualitySarif)' == 'true'">
+    <IimmpactQualitySarifDir>$(MSBuildProjectDirectory)\obj\iimmpact-quality</IimmpactQualitySarifDir>
+    <ErrorLog>$(IimmpactQualitySarifDir)\$(MSBuildProjectName).$(TargetFramework).sarif,version=2.1</ErrorLog>
+  </PropertyGroup>
+
+  <!-- csc does not create missing directories for ErrorLog. -->
+  <Target Name="IimmpactQualityEnsureSarifDir" BeforeTargets="CoreCompile" Condition="'$(IimmpactQualitySarif)' == 'true'">
+    <MakeDir Directories="$(IimmpactQualitySarifDir)" />
+  </Target>
+
+</Project>

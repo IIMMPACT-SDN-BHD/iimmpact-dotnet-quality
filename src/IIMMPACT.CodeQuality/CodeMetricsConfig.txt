@@ -1,0 +1,5 @@
+# Thresholds for Microsoft.CodeAnalysis.NetAnalyzers code metrics.
+# Format: RuleId(SymbolKind): Threshold
+CA1502: 25
+CA1506(Type): 60
+CA1506(Method): 40

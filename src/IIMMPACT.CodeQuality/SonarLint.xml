@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<AnalysisInput>
+  <Rules>
+    <Rule>
+      <Key>S134</Key>
+      <Parameters>
+        <Parameter>
+          <Key>maximumNestingLevel</Key>
+          <Value>4</Value>
+        </Parameter>
+      </Parameters>
+    </Rule>
+    <Rule>
+      <Key>S138</Key>
+      <Parameters>
+        <Parameter>
+          <Key>max</Key>
+          <Value>60</Value>
+        </Parameter>
+      </Parameters>
+    </Rule>
+    <Rule>
+      <Key>S104</Key>
+      <Parameters>
+        <Parameter>
+          <Key>maximumFileLocThreshold</Key>
+          <Value>400</Value>
+        </Parameter>
+      </Parameters>
+    </Rule>
+  </Rules>
+</AnalysisInput>

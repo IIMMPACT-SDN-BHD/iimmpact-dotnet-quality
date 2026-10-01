@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+    <GenerateDependencyFile>false</GenerateDependencyFile>
+    <DevelopmentDependency>true</DevelopmentDependency>
+
+    <PackageId>IIMMPACT.CodeQuality</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Shared IIMMPACT C# code-quality rules: analyzer configuration, banned APIs, and thresholds for SonarAnalyzer and Microsoft.CodeAnalysis rules.</Description>
+    <Authors>IIMMPACT SDN BHD</Authors>
+    <Company>IIMMPACT SDN BHD</Company>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageTags>iimmpact;code-quality;analyzers</PackageTags>
+  </PropertyGroup>
+
+  <!-- PrivateAssets="none" so analyzer assets from these packages flow to consumers. -->
+  <ItemGroup>
+    <PackageReference Include="SonarAnalyzer.CSharp" Version="10.35.0.4138" PrivateAssets="none" />
+    <PackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="4.14.0" PrivateAssets="none" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="build\IIMMPACT.CodeQuality.props" Pack="true" PackagePath="build\IIMMPACT.CodeQuality.props" />
+    <None Include="build\IIMMPACT.CodeQuality.targets" Pack="true" PackagePath="build\IIMMPACT.CodeQuality.targets" />
+    <None Include="IIMMPACT.CodeQuality.globalconfig" Pack="true" PackagePath="build\IIMMPACT.CodeQuality.globalconfig" />
+    <None Include="CodeMetricsConfig.txt" Pack="true" PackagePath="build\CodeMetricsConfig.txt" />
+    <None Include="SonarLint.xml" Pack="true" PackagePath="build\SonarLint.xml" />
+    <None Include="BannedSymbols.IIMMPACT.txt" Pack="true" PackagePath="build\BannedSymbols.IIMMPACT.txt" />
+  </ItemGroup>
+
+</Project>

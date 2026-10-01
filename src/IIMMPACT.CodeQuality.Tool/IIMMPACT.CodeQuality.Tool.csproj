@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RollForward>Major</RollForward>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>iimmpact-quality</ToolCommandName>
+    <PackageId>IIMMPACT.CodeQuality.Tool</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Checks .NET solutions against the IIMMPACT code-quality baseline. Build warnings become gate failures only when they grow past the baseline.</Description>
+    <Authors>IIMMPACT SDN BHD</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="IIMMPACT.CodeQuality.Tool.Tests" />
+  </ItemGroup>
+
+</Project>

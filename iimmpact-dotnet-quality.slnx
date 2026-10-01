@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/IIMMPACT.CodeQuality.Tool/IIMMPACT.CodeQuality.Tool.csproj" />
+    <Project Path="src/IIMMPACT.CodeQuality/IIMMPACT.CodeQuality.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/IIMMPACT.CodeQuality.Tool.Tests/IIMMPACT.CodeQuality.Tool.Tests.csproj" />
+  </Folder>
+</Solution>

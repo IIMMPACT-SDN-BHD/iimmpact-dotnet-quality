@@ -1,0 +1,7 @@
+P:System.DateTime.Now;Use DateTime.UtcNow or an injected TimeProvider; PostgreSQL stores UTC and MSSQL stores GMT+8, convert explicitly
+P:System.DateTimeOffset.Now;Use DateTimeOffset.UtcNow or an injected TimeProvider; PostgreSQL stores UTC and MSSQL stores GMT+8, convert explicitly
+T:System.Console;Use ILogger so logs stay structured
+M:System.Net.Http.HttpClient.#ctor;Use IHttpClientFactory to avoid socket exhaustion
+M:System.Net.Http.HttpClient.#ctor(System.Net.Http.HttpMessageHandler);Use IHttpClientFactory to avoid socket exhaustion
+M:System.Net.Http.HttpClient.#ctor(System.Net.Http.HttpMessageHandler,System.Boolean);Use IHttpClientFactory to avoid socket exhaustion
+M:System.Net.Http.HttpClient.#ctor(System.Net.Http.SocketsHttpHandler);Use IHttpClientFactory to avoid socket exhaustion
