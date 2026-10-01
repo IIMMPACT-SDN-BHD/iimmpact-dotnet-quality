@@ -8,15 +8,8 @@
     <DevelopmentDependency>true</DevelopmentDependency>
 
     <PackageId>IIMMPACT.CodeQuality</PackageId>
-    <Version>0.1.0</Version>
     <Description>Shared IIMMPACT C# code-quality rules: analyzer configuration, banned APIs, and thresholds for SonarAnalyzer and Microsoft.CodeAnalysis rules.</Description>
-    <Authors>IIMMPACT SDN BHD</Authors>
-    <Company>IIMMPACT SDN BHD</Company>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
-    <PackageTags>iimmpact;code-quality;analyzers</PackageTags>
+    <PackageTags>iimmpact;code-quality;analyzers;roslyn;sonaranalyzer;banned-api;complexity;maintainability</PackageTags>
   </PropertyGroup>
 
   <!-- PrivateAssets="none" so analyzer assets from these packages flow to consumers. -->
@@ -32,6 +25,8 @@
     <None Include="CodeMetricsConfig.txt" Pack="true" PackagePath="build\CodeMetricsConfig.txt" />
     <None Include="SonarLint.xml" Pack="true" PackagePath="build\SonarLint.xml" />
     <None Include="BannedSymbols.IIMMPACT.txt" Pack="true" PackagePath="build\BannedSymbols.IIMMPACT.txt" />
+    <!-- Empty placeholder so the build-only package declares netstandard2.0 compatibility (NU5128). -->
+    <None Include="_._" Pack="true" PackagePath="lib\netstandard2.0\_._" />
   </ItemGroup>
 
 </Project>

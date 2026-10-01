@@ -19,13 +19,10 @@ jobs:
       - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "8.0.x"
-      - name: Verify tag matches package versions
+      - name: Verify tag matches package version
         run: |
-          tag="${GITHUB_REF_NAME}"
-          pkg=$(grep -oPm1 '(?<=<Version>)[^<]+' src/IIMMPACT.CodeQuality/IIMMPACT.CodeQuality.csproj)
-          tool=$(grep -oPm1 '(?<=<Version>)[^<]+' src/IIMMPACT.CodeQuality.Tool/IIMMPACT.CodeQuality.Tool.csproj)
-          test "$tag" = "v$pkg"
-          test "$tag" = "v$tool"
+          version=$(dotnet msbuild src/IIMMPACT.CodeQuality -getProperty:Version)
+          test "${GITHUB_REF_NAME}" = "v$version"
       - run: dotnet pack src/IIMMPACT.CodeQuality -o artifacts -c Release
       - run: dotnet pack src/IIMMPACT.CodeQuality.Tool -o artifacts -c Release
       - name: NuGet login (OIDC)

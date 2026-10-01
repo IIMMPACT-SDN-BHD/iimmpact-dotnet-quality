@@ -1,0 +1,21 @@
+<Project>
+
+  <!-- Package metadata shared by IIMMPACT.CodeQuality and IIMMPACT.CodeQuality.Tool. -->
+  <PropertyGroup>
+    <Version>0.1.0</Version>
+    <Authors>IIMMPACT SDN BHD</Authors>
+    <Company>IIMMPACT SDN BHD</Company>
+    <Copyright>Copyright (c) IIMMPACT SDN BHD 2026</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReleaseNotes>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality/releases/tag/v$(Version)</PackageReleaseNotes>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

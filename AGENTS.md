@@ -32,4 +32,4 @@ Managed rules are defined in `Diagnostics.cs` (`ManagedRules.Ids`). The tool onl
 
 - Do not commit or push without explicit approval.
 - Do not publish packages or create the GitHub remote without explicit approval.
-- Bump `<Version>` in both csproj files together; release tags must match.
+- Bump `<Version>` in `Directory.Build.props`; it versions both packages and release tags must match it. Shared package metadata (copyright, license, README, release notes) also lives there.

@@ -9,12 +9,8 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>iimmpact-quality</ToolCommandName>
     <PackageId>IIMMPACT.CodeQuality.Tool</PackageId>
-    <Version>0.1.0</Version>
     <Description>Checks .NET solutions against the IIMMPACT code-quality baseline. Build warnings become gate failures only when they grow past the baseline.</Description>
-    <Authors>IIMMPACT SDN BHD</Authors>
-    <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <RepositoryUrl>https://github.com/IIMMPACT-SDN-BHD/iimmpact-dotnet-quality</RepositoryUrl>
-    <RepositoryType>git</RepositoryType>
+    <PackageTags>iimmpact;code-quality;dotnet-tool;baseline;sarif;ci;quality-gate</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

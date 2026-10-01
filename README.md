@@ -59,7 +59,7 @@ dotnet iimmpact-quality check MyApp.slnx    # fails on growth or stale entries
 
 ## Releasing
 
-Tag `v<version>` where `<version>` equals the `<Version>` in both csproj files. The release workflow verifies the tag, packs both packages, publishes to nuget.org via `NuGet/login` OIDC, and creates the GitHub release.
+Tag `v<version>` where `<version>` equals the `<Version>` in `Directory.Build.props`. The release workflow verifies the tag, packs both packages, publishes to nuget.org via `NuGet/login` OIDC, and creates the GitHub release.
 
 ## License
 
