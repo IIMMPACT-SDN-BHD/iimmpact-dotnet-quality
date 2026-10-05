@@ -70,7 +70,9 @@ expect_fail() {
 
 # --- environment -----------------------------------------------------------
 
-log "pack packages"
+VERSION="$(sed -n 's|.*<Version>\(.*\)</Version>.*|\1|p' "$REPO_ROOT/Directory.Build.props")"
+
+log "pack packages $VERSION"
 dotnet pack "$REPO_ROOT/src/IIMMPACT.CodeQuality" --artifacts-path "$WORK/artifacts" -o "$FEED" -c Release -v quiet --nologo
 dotnet pack "$REPO_ROOT/src/IIMMPACT.CodeQuality.Tool" --artifacts-path "$WORK/artifacts" -o "$FEED" -c Release -v quiet --nologo
 ls "$FEED"/*.nupkg
@@ -92,17 +94,17 @@ rm -f Consumer/Class1.cs
 if [ -f Fixture.slnx ]; then SLN=Fixture.slnx; else SLN=Fixture.sln; fi
 dotnet sln "$SLN" add Consumer/Consumer.csproj >/dev/null
 
-cat > Consumer/Directory.Build.props <<'EOF'
+cat > Consumer/Directory.Build.props <<EOF
 <Project>
   <ItemGroup>
-    <PackageReference Include="IIMMPACT.CodeQuality" Version="0.1.0" PrivateAssets="all" />
+    <PackageReference Include="IIMMPACT.CodeQuality" Version="$VERSION" PrivateAssets="all" />
     <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.0" />
   </ItemGroup>
 </Project>
 EOF
 
 dotnet new tool-manifest --force >/dev/null
-dotnet tool install IIMMPACT.CodeQuality.Tool --version 0.1.0 --add-source "$FEED" >/dev/null
+dotnet tool install IIMMPACT.CodeQuality.Tool --version "$VERSION" --add-source "$FEED" >/dev/null
 
 # --- consumer sources ------------------------------------------------------
 # One violation per managed rule group plus a second S138 offender to prove
@@ -619,5 +621,33 @@ assert_contains "$WORK/bootstrap-clean.log" "wrote code-quality-baseline.json" "
 git add "$BASELINE" && git commit -m "clean baseline" >/dev/null
 dotnet iimmpact-quality check "$SLN" --base "$(git rev-parse HEAD)" | tee "$WORK/check-clean.log"
 assert_contains "$WORK/check-clean.log" "PASS" "clean scan passes"
+CLEAN_BASE=$(git rev-parse HEAD)
+
+# --- correctness rules: each fails with its ID, then passes once fixed --------
+
+for rule in $(python3 "$REPO_ROOT/scripts/rule-cases.py" list); do
+  log "$rule fails, then passes when fixed"
+  python3 "$REPO_ROOT/scripts/rule-cases.py" "$rule" bad Consumer/RuleProbe.cs
+  expect_fail 1 "$rule bad" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+  assert_contains "$LAST_LOG" "Consumer/RuleProbe.cs(" "$rule failure has a file location"
+  assert_contains "$LAST_LOG" "error $rule:" "$rule is reported as a gate error"
+  python3 "$REPO_ROOT/scripts/rule-cases.py" "$rule" good Consumer/RuleProbe.cs
+  dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE" > "$WORK/$rule-good.log" 2>&1 \
+    || { echo "FAIL: corrected $rule source does not pass" >&2; cat "$WORK/$rule-good.log" >&2; exit 1; }
+  assert_contains "$WORK/$rule-good.log" "PASS" "corrected $rule source passes"
+done
+
+log "#nullable disable cannot hide nullable debt"
+python3 "$REPO_ROOT/scripts/rule-cases.py" CS8602 bad Consumer/RuleProbe.cs
+printf '#nullable disable\n%s' "$(cat Consumer/RuleProbe.cs)" > Consumer/RuleProbe.cs
+expect_fail 2 "nullable disable" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+assert_contains "$LAST_LOG" "#nullable disable suppresses managed nullable rules" "nullable directive named"
+
+log "a project without nullable analysis fails"
+rm Consumer/RuleProbe.cs
+sed -i.bak 's|<Nullable>enable</Nullable>|<Nullable>disable</Nullable>|' Consumer/Consumer.csproj && rm Consumer/Consumer.csproj.bak
+expect_fail 2 "nullable disabled project" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+assert_contains "$LAST_LOG" "missing fresh CS8602 analyzer execution sentinel" "nullable sentinel named"
+git checkout -- Consumer/Consumer.csproj
 
 log "ALL CHECKS PASSED"

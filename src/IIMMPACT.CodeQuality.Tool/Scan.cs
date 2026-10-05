@@ -67,11 +67,13 @@ internal sealed class CompleteScan : IDisposable
 internal static class ScanCollector
 {
     private const string FileEntity = "file";
-    private static readonly string[] SentinelRules = ["CA1849", "RS0030", "S134", "IDE0051"];
+    private static readonly string[] SentinelRules = ["CA1849", "RS0030", "S134", "IDE0051", "CS8602"];
+    private const int MinimumSdkMajor = 9;
 
     public static async Task<CompleteScan> CollectAsync(
         string solutionPath, string solutionDir, List<string> solutionProjects)
     {
+        await RequireSupportedSdkAsync(solutionDir);
         var plans = await EvaluateClosureAsync(solutionProjects, solutionDir);
         if (plans.Count == 0) throw new ScanException("no C# compilations were declared");
 
@@ -112,6 +114,17 @@ internal static class ScanCollector
             catch (UnauthorizedAccessException) { }
             throw;
         }
+    }
+
+    // CA2022 ships in the .NET 9 SDK analyzers; an older SDK would silently enforce fewer rules.
+    private static async Task RequireSupportedSdkAsync(string solutionDir)
+    {
+        var (exit, output) = await RunProcessAsync("dotnet", ["--version"], solutionDir);
+        var version = output.Trim();
+        if (exit != 0 || !int.TryParse(version.Split('.')[0], out var major))
+            throw new ScanException($"cannot determine the .NET SDK version: {version}");
+        if (major < MinimumSdkMajor)
+            throw new ScanException($".NET SDK {version} is not supported; iimmpact-quality requires .NET SDK {MinimumSdkMajor} or later (target frameworks may stay older)");
     }
 
     private sealed record CompilationPlan(string ProjectPath, string TargetFramework, CompilationKey Key);
@@ -381,7 +394,7 @@ internal static class ScanCollector
                 && root.AttributeLists.All(list => list.Target?.Identifier.IsKind(SyntaxKind.AssemblyKeyword) == true);
     }
 
-    private static bool IsAnalyzerRecognizedGenerated(string source, CSharpParseOptions options)
+    internal static bool IsAnalyzerRecognizedGenerated(string source, CSharpParseOptions options)
     {
         var name = Path.GetFileName(source);
         if (name.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase)

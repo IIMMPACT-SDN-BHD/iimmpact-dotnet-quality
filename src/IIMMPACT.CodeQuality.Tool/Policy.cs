@@ -43,6 +43,10 @@ internal static class Policy
                         && option.Value == ReportDiagnostic.Suppress))
                     failures.Add($"{label}: {rule} is suppressed by the actual csc command line");
             }
+            if (!ScanCollector.IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath)
+                && !ScanCollector.IsAnalyzerRecognizedGenerated(source, compilation.CommandLine.ParseOptions))
+                failures.AddRange(NullableDisables(source, compilation.CommandLine.ParseOptions)
+                    .Select(line => $"{QualityGate.RelativePath(solutionDir, source)}({line},1): error: #nullable disable suppresses managed nullable rules"));
         }
 
         failures.AddRange(compilation.Diagnostics
@@ -50,6 +54,15 @@ internal static class Policy
             .Select(d => $"{d.Path}({d.Line},{d.Column}): error: {d.RuleId} is suppressed in source"));
         return failures;
     }
+
+    private static IEnumerable<int> NullableDisables(string source, Microsoft.CodeAnalysis.CSharp.CSharpParseOptions options) =>
+        Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(source), options)
+            .GetRoot()
+            .DescendantTrivia(descendIntoTrivia: true)
+            .Select(trivia => trivia.GetStructure())
+            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.NullableDirectiveTriviaSyntax>()
+            .Where(directive => directive.SettingToken.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.DisableKeyword))
+            .Select(directive => directive.GetLocation().GetLineSpan().StartLinePosition.Line + 1);
 
     internal static ImmutableDictionary<string, string> EffectiveOptions(CompilationScan compilation, string source)
     {

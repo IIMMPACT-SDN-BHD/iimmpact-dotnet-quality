@@ -15,6 +15,7 @@ public class ParsingTests
     [InlineData("CA1506", "'Foo.Bar' is coupled with 41 different types from 3 different namespaces. Rewrite or refactor the code to decrease its class coupling below the threshold 40.", 41)]
     [InlineData("S138", "This method 'Run' has 61 lines, which is greater than the 60 lines authorized. Split it into smaller methods.", 61)]
     [InlineData("S104", "This file has 401 lines, which is greater than 400 authorized. Split it into smaller files.", 401)]
+    [InlineData("S3776", "Refactor this method to reduce its Cognitive Complexity from 21 to the 15 allowed.", 21)]
     public void ParseMetric_ReadsValueFromRealMessageShapes(string rule, string message, long expected) =>
         Assert.Equal(expected, ManagedRules.ParseMetric(rule, message));
 

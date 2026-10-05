@@ -25,13 +25,24 @@ The package turns these rules on as warnings:
 | CA2254 logging template | — | globalconfig |
 | RS0030 banned APIs | `DateTime.Now`, `DateTimeOffset.Now`, `System.Console`, `new HttpClient()` | `BannedSymbols.IIMMPACT.txt` |
 | IDE0051, IDE0052, IDE0060 unused code | non-public parameters | globalconfig |
+| S3776 cognitive complexity | 15 | `SonarLint.xml` |
+| CA2008, CA2012 task and `ValueTask` misuse | — | globalconfig |
+| CA2017, CA2241 logging and format argument mismatches | — | globalconfig |
+| CA2000 undisposed objects | — | globalconfig |
+| CA2013, CA2019, CA2022, CA2200, CA2208, CA2214 runtime correctness | — | globalconfig |
+| CS8600, CS8601, CS8602, CS8603, CS8604, CS8618, CS8619, CS8625, CS8629 nullable correctness | — | globalconfig |
+
+## Requirements
+
+- .NET SDK 9 or later. `CA2022` ships with the .NET 9 SDK analyzers, so the tool rejects older SDKs with exit `2` instead of silently enforcing fewer rules. Projects may still target older frameworks such as `net8.0`.
+- `<Nullable>enable</Nullable>` in every checked project. The tool fails with exit `2` when nullable analysis does not run, or when handwritten source contains `#nullable disable`.
 
 ## Usage
 
 Reference the package in every project you want checked:
 
 ```xml
-<PackageReference Include="IIMMPACT.CodeQuality" Version="0.1.0" PrivateAssets="all" />
+<PackageReference Include="IIMMPACT.CodeQuality" Version="0.2.0" PrivateAssets="all" />
 ```
 
 Install the tool once per repo:
@@ -61,7 +72,8 @@ Exit codes:
 
 - a project or target framework in the `ProjectReference` closure produced no fresh compiler evidence or SARIF log,
 - analyzers were skipped (`RunAnalyzersDuringBuild=false`) or an analyzer failed (`ADxxxx`),
-- one of the four analyzer families (NetAnalyzers, BannedApi, Sonar, code style) did not report its execution sentinel,
+- one of the analyzer families (NetAnalyzers, BannedApi, Sonar, code style, compiler nullable analysis) did not report its execution sentinel,
+- the .NET SDK is older than 9, or handwritten source contains `#nullable disable`,
 - the SARIF log is malformed, or a managed result is missing its location, message or metric,
 - the effective configuration silences a managed rule (`.editorconfig` or `.globalconfig` severity in any casing, `NoWarn`, or a source suppression),
 - the shipped `.globalconfig`, `SonarLint.xml`, `CodeMetricsConfig.txt` or `BannedSymbols.IIMMPACT.txt` input differs from the package content.
@@ -74,7 +86,7 @@ A source that analyzers treat as generated (`.g.cs`, `.g.i.cs`, `.generated.cs`,
 
 `iimmpact-quality` lists the solution's projects, evaluates each project's target frameworks and `ProjectReference` closure, then builds every compilation in dependency order into a fresh temporary artifacts directory with `-p:IimmpactQualitySarif=true`. The package targets add an execution-sentinel source file to each compilation and write the actual `csc` command line, inputs and SARIF log to that invocation's evidence directory. The tool parses the command line with Roslyn's `CSharpCommandLineParser` and resolves effective analyzer options with `AnalyzerConfigSet`. Evidence from earlier builds is never read. Diagnostics for rules outside the managed list are ignored.
 
-Allowances are per declaration (`EntityKey` = project path + TFM + source file + declaration identity), so a ceiling approved for one method cannot cover growth in another. `MetricAllowance` stores the measured ceiling for S138, CA1502 and CA1506. S104 is always attributed to the file. `FrozenScopeAllowance` stores a digest of the declaration's C# tokens and each diagnostic's token position for rules without a measurement (S134, RS0030, IDE*, and the rest). Comments and whitespace do not change either value, so they never invalidate an allowance. Any token change inside the declaration does.
+Allowances are per declaration (`EntityKey` = project path + TFM + source file + declaration identity), so a ceiling approved for one method cannot cover growth in another. `MetricAllowance` stores the measured ceiling for S138, S3776, CA1502 and CA1506. S104 is always attributed to the file. `FrozenScopeAllowance` stores a digest of the declaration's C# tokens and each diagnostic's token position for rules without a measurement (S134, RS0030, IDE*, and the rest). Comments and whitespace do not change either value, so they never invalidate an allowance. Any token change inside the declaration does.
 
 ## Releasing
 

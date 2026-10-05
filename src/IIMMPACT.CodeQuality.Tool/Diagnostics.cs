@@ -7,11 +7,13 @@ internal static class ManagedRules
     public static readonly IReadOnlySet<string> OccurrenceIds = new HashSet<string>(StringComparer.Ordinal)
     {
         "S4462", "CA1849", "CA2016", "CA2254", "RS0030", "IDE0051", "IDE0052", "IDE0060",
+        "CA2000", "CA2008", "CA2012", "CA2013", "CA2017", "CA2019", "CA2022", "CA2200", "CA2208", "CA2214", "CA2241",
+        "CS8600", "CS8601", "CS8602", "CS8603", "CS8604", "CS8618", "CS8619", "CS8625", "CS8629",
     };
 
     public static readonly IReadOnlySet<string> MetricIds = new HashSet<string>(StringComparer.Ordinal)
     {
-        "CA1502", "CA1506", "S104", "S138",
+        "CA1502", "CA1506", "S104", "S138", "S3776",
     };
 
     public static readonly IReadOnlySet<string> FrozenScopeIds = new HashSet<string>(StringComparer.Ordinal) { "S134" };
@@ -24,6 +26,7 @@ internal static class ManagedRules
             "CA1502" => @"cyclomatic complexity of '?([0-9]+)'?",
             "CA1506" => @"coupled with '?([0-9]+)'? different types",
             "S138" or "S104" => @"has '?([0-9]+)'? lines",
+            "S3776" => @"Cognitive Complexity from '?([0-9]+)'?",
             _ => null,
         };
         if (pattern is null) return null;

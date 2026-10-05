@@ -12,7 +12,7 @@ Shared C# code-quality rules for IIMMPACT. One NuGet package ships analyzer conf
 
 ## Rules and thresholds
 
-Managed rules are defined in `Diagnostics.cs` (`ManagedRules.Ids`). The tool only counts these IDs; other analyzer warnings are ignored. Thresholds live in the package files: `CodeMetricsConfig.txt` (CA1502=25, CA1506 type=60, method=40), `SonarLint.xml` (S134=4, S138=60, S104=400). Banned symbols live in `BannedSymbols.IIMMPACT.txt` (DateTime.Now/DateTimeOffset.Now/System.Console/HttpClient constructors).
+Managed rules are defined in `Diagnostics.cs` (`ManagedRules.Ids`). The tool only counts these IDs; other analyzer warnings are ignored. Thresholds live in the package files: `CodeMetricsConfig.txt` (CA1502=25, CA1506 type=60, method=40), `SonarLint.xml` (S134=4, S138=60, S104=400, S3776=15). Every correctness rule added in 0.2.0 has a bad and a corrected case in `scripts/rule-cases.py`, and the fixture runs both through the packaged CLI. Add a case there when adding a rule. The tool requires .NET SDK 9 or later and a nullable-enabled compilation (sentinel `CS8602`). Banned symbols live in `BannedSymbols.IIMMPACT.txt` (DateTime.Now/DateTimeOffset.Now/System.Console/HttpClient constructors).
 
 ## Conventions
 

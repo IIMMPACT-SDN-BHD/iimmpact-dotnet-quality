@@ -22,6 +22,7 @@
       <_IimmpactSentinelLine Include="  internal static System.DateTime BannedApi() =&gt; System.DateTime.Now%3B" />
       <_IimmpactSentinelLine Include="  internal static int Sonar(int x) { if (x &gt; 0) { if (x &gt; 1) { if (x &gt; 2) { if (x &gt; 3) { if (x &gt; 4) return x%3B } } } } return 0%3B }" />
       <_IimmpactSentinelLine Include="  private static void CodeStyle() { }" />
+      <_IimmpactSentinelLine Include="  internal static int NullableAnalysis(string%3F value) =&gt; value.Length%3B" />
       <_IimmpactSentinelLine Include="}" />
     </ItemGroup>
     <WriteLinesToFile File="$(IimmpactQualitySarifDir)\execution-sentinel.cs"
