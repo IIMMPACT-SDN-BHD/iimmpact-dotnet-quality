@@ -3,158 +3,363 @@ using Xunit;
 namespace IIMMPACT.CodeQuality.Tool.Tests;
 
 /// <summary>
-/// Baseline comparison is the gate's core behavior: growth fails, shrinkage is stale,
-/// equality passes. Each test builds literal diagnostics and baseline JSON and asserts
-/// the observable failure strings.
+/// Schema-2 baseline comparison is the gate's core behavior: an allowance must cover
+/// the candidate violation or the check fails. Each test builds literal scan inputs
+/// and baseline JSON and asserts the observable failure strings.
 /// </summary>
 public class BaselineCompareTests
 {
-    private static Diagnostic Diag(string path, string rule, int line, string message = "message", long? metric = null) =>
-        new(rule, path, line, 5, message, metric);
+    private static EntityKey Entity(string declaration, string source = "src/Foo.cs") =>
+        new(new CompilationKey("Consumer.csproj", "net8.0"), source, declaration);
 
-    private static BaselineState Current(params Diagnostic[] diagnostics) =>
-        BaselineState.FromDiagnostics(diagnostics);
+    private static ScanViolation Metric(
+        string rule, string declaration, long metric, string source = "src/Foo.cs", int line = 10) =>
+        new(Entity(declaration, source), rule, $"message {rule}", metric,
+            new DiagnosticSite(source, line, 5), [], string.Empty);
 
-    private static BaselineState Baseline(string json) => BaselineState.Parse(json);
+    private static ScanViolation Frozen(
+        string rule, string declaration, string digest, string source = "src/Foo.cs", int line = 10) =>
+        new(Entity(declaration, source), rule, $"message {rule}", null,
+            new DiagnosticSite(source, line, 5), [new TokenSite(line, 0)], digest);
+
+    private static IReadOnlyList<ScanViolation> Scan(params ScanViolation[] violations) => violations;
+
+    private static Baseline ParseBaseline(string json) => Baseline.Parse(json);
 
     [Fact]
-    public void Pass_WhenDiagnosticsMatchBaseline()
+    public void Pass_WhenViolationIsCoveredByAllowance()
     {
-        var baseline = Baseline("""
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S134": { "count": 1 }
-              }
+              "schema": "iimmpact-quality-baseline",
+              "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
             }
             """);
-        var diagnostics = new List<Diagnostic> { Diag("src/Foo.cs", "S134", 10) };
-        var failures = baseline.Compare(Current(diagnostics.ToArray()), diagnostics);
-        Assert.Empty(failures);
+        var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 61));
+        Assert.Empty(baseline.Compare(scan));
     }
 
     [Fact]
-    public void Fails_WhenRuleAppearsInNewFile()
+    public void Fails_WhenNoAllowanceExists()
     {
-        var baseline = Baseline("""
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S134": { "count": 1 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2", "allowances": []
             }
             """);
-        var diagnostics = new List<Diagnostic>
-        {
-            Diag("src/Foo.cs", "S134", 10),
-            Diag("src/Bar.cs", "S134", 3),
-        };
-        var failures = baseline.Compare(Current(diagnostics.ToArray()), diagnostics);
-        var failure = Assert.Single(failures);
-        Assert.Contains("src/Bar.cs(3,5): error S134: message", failure);
-        Assert.Contains("new diagnostics not in baseline", failure);
+        var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 61));
+        var failure = Assert.Single(baseline.Compare(scan));
+        Assert.Contains("src/Foo.cs(10,5): error S138", failure);
+        Assert.Contains("no baseline allowance", failure);
     }
 
     [Fact]
-    public void Fails_WhenCountGrows()
+    public void Fails_WhenMetricExceedsCeiling()
     {
-        var baseline = Baseline("""
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S134": { "count": 1 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
             }
             """);
-        var diagnostics = new List<Diagnostic>
-        {
-            Diag("src/Foo.cs", "S134", 10),
-            Diag("src/Foo.cs", "S134", 20),
-        };
-        var failures = baseline.Compare(Current(diagnostics.ToArray()), diagnostics);
-        var failure = Assert.Single(failures);
-        Assert.Contains("src/Foo.cs(10,5): error S134", failure);
-        Assert.Contains("src/Foo.cs(20,5): error S134", failure);
-        Assert.Contains("count 2 exceeds baseline 1", failure);
+        var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 71));
+        var failure = Assert.Single(baseline.Compare(scan));
+        Assert.Contains("metric 71 exceeds approved ceiling 61", failure);
     }
 
     [Fact]
-    public void Fails_WhenMetricGrows()
+    public void Fails_WhenFrozenScopeDigestDiffers()
     {
-        var baseline = Baseline("""
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S138": { "count": 1, "max": 61 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "frozen",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "S134", "tokenDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sites": [{ "token": 10, "offset": 0 }]
+              }]
             }
             """);
-        var diagnostics = new List<Diagnostic>
-        {
-            Diag("src/Foo.cs", "S138", 4,
-                "This method 'Run' has 65 lines, which is greater than the 60 lines authorized.",
-                metric: 65),
-        };
-        var failures = baseline.Compare(Current(diagnostics.ToArray()), diagnostics);
-        var failure = Assert.Single(failures);
-        Assert.Contains("metric 65 exceeds baseline max 61", failure);
+        var scan = Scan(Frozen("S134", "class Foo.method int Run(int)", "different"));
+        var failure = Assert.Single(baseline.Compare(scan));
+        Assert.Contains("differ from the approved scope", failure);
     }
 
     [Fact]
-    public void Fails_WhenBaselineEntryDisappears()
+    public void Fails_WhenViolationMovesFiles_EvenWithSameDeclarationName()
     {
-        var baseline = Baseline("""
+        // A same-named declaration in a different file must not inherit the allowance.
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S134": { "count": 1 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
             }
             """);
-        var failures = baseline.Compare(Current(), []);
-        var failure = Assert.Single(failures);
-        Assert.Contains("src/Foo.cs: error S134: stale baseline entry (was count 1, now absent)", failure);
-        Assert.Contains("lower it", failure);
+        var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 61, source: "src/Other.cs"));
+        Assert.Single(baseline.Compare(scan));
     }
 
     [Fact]
-    public void Fails_WhenBaselineEntryIsLowerNow()
+    public void Fails_WhenFrozenScopeSiteDiffers()
     {
-        var baseline = Baseline("""
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S134": { "count": 2 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "frozen",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "S134", "tokenDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sites": [{ "token": 1, "offset": 0 }]
+              }]
             }
             """);
-        var diagnostics = new List<Diagnostic> { Diag("src/Foo.cs", "S134", 10) };
-        var failures = baseline.Compare(Current(diagnostics.ToArray()), diagnostics);
-        var failure = Assert.Single(failures);
-        Assert.Contains("stale baseline entry (was count 2, now count 1)", failure);
+        var violation = new ScanViolation(
+            Entity("class Foo.method int Run(int)"), "S134", "nesting", null,
+            new DiagnosticSite("src/Foo.cs", 2, 9), [new TokenSite(2, 0)], new string('a', 64));
+        var failure = Assert.Single(baseline.Compare(Scan(violation)));
+        Assert.Contains("differ from the approved scope", failure);
     }
 
     [Fact]
-    public void Fails_WhenBaselineMetricIsLowerNow()
+    public void Pass_WhenFrozenScopeContainsTheCompleteApprovedSiteSet()
     {
-        var baseline = Baseline("""
+        // A declaration that repeats a banned call produces one allowance listing
+        // every call site; each candidate diagnostic must match one of them.
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S138": { "count": 1, "max": 61 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "frozen",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "RS0030", "tokenDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sites": [
+                  { "token": 2, "offset": 0 },
+                  { "token": 5, "offset": 0 }
+                ]
+              }]
             }
             """);
-        var diagnostics = new List<Diagnostic>
-        {
-            Diag("src/Foo.cs", "S138", 4,
-                "This method 'Run' has 61 lines, which is greater than the 60 lines authorized.",
-                metric: 61),
-        };
-        // Rewrite max upward in baseline to simulate drift below the recorded max.
-        var tighter = Baseline("""
+        var violation = new ScanViolation(
+            Entity("class Foo.method int Run(int)"), "RS0030", "banned", null,
+            new DiagnosticSite("src/Foo.cs", 5, 3),
+            [new TokenSite(2, 0), new TokenSite(5, 0)],
+            new string('a', 64));
+        Assert.Empty(baseline.Compare(Scan(violation)));
+    }
+
+    [Fact]
+    public void Fails_WhenFrozenScopeHasAnUnapprovedSite()
+    {
+        var baseline = ParseBaseline("""
             {
-              "src/Foo.cs": {
-                "S138": { "count": 1, "max": 62 }
-              }
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "frozen",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "RS0030", "tokenDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "sites": [{ "token": 2, "offset": 0 }]
+              }]
             }
             """);
-        var failures = tighter.Compare(Current(diagnostics.ToArray()), diagnostics);
-        var failure = Assert.Single(failures);
-        Assert.Contains("stale baseline entry (was count 1, max 62, now count 1, max 61)", failure);
-        Assert.Empty(baseline.Compare(Current(diagnostics.ToArray()), diagnostics));
+        var violation = new ScanViolation(
+            Entity("class Foo.method int Run(int)"), "RS0030", "banned", null,
+            new DiagnosticSite("src/Foo.cs", 9, 9), [new TokenSite(9, 0)], new string('a', 64));
+        Assert.Single(baseline.Compare(Scan(violation)));
+    }
+
+    [Fact]
+    public void Fails_WhenMetricViolationHasNoMeasuredValue()
+    {
+        var baseline = ParseBaseline("""
+            {
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric",
+                "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs",
+                "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
+            }
+            """);
+        var violation = new ScanViolation(
+            Entity("class Foo.method int Run(int)"), "S138", "message", null,
+            new DiagnosticSite("src/Foo.cs", 10, 5), [], string.Empty);
+        var failure = Assert.Single(baseline.Compare(Scan(violation)));
+        Assert.Contains("no measured value for a metric rule", failure);
+    }
+
+    [Fact]
+    public void Parse_RejectsAggregateSchema()
+    {
+        var exception = Assert.Throws<BaselineFormatException>(() => Baseline.Parse("""
+            { "src/Foo.cs": { "S134": { "count": 1 } } }
+            """));
+        Assert.Contains("unknown baseline property", exception.Message);
+    }
+
+    [Fact]
+    public void Parse_RejectsWrongPolicy()
+    {
+        var exception = Assert.Throws<BaselineFormatException>(() => Baseline.Parse("""
+            {
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "different", "allowances": []
+            }
+            """));
+        Assert.Contains("policy", exception.Message);
+    }
+
+    [Fact]
+    public void Parse_RejectsDuplicateAllowance()
+    {
+        var exception = Assert.Throws<BaselineFormatException>(() => Baseline.Parse("""
+            {
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [
+                {
+                  "kind": "metric", "project": "Consumer.csproj", "tfm": "net8.0",
+                  "source": "src/Foo.cs", "declaration": "class Foo.method int Run(int)",
+                  "rule": "S138", "ceiling": 61
+                },
+                {
+                  "kind": "metric", "project": "Consumer.csproj", "tfm": "net8.0",
+                  "source": "src/Foo.cs", "declaration": "class Foo.method int Run(int)",
+                  "rule": "S138", "ceiling": 61
+                }
+              ]
+            }
+            """));
+        Assert.Contains("duplicate", exception.Message);
+    }
+
+    [Fact]
+    public void RoundTrip_PreservesAllowances()
+    {
+        var json = """
+            {
+              "schema": "iimmpact-quality-baseline",
+              "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "generatedExclusions": [
+                { "path": "Consumer/obj/Debug/net8.0/Gen.g.cs", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd" }
+              ],
+              "allowances": [
+                {
+                  "kind": "metric", "project": "Consumer.csproj", "tfm": "net8.0",
+                  "source": "src/Foo.cs", "declaration": "class Foo.method int Run(int)",
+                  "rule": "S138", "ceiling": 61
+                },
+                {
+                  "kind": "frozen", "project": "Consumer.csproj", "tfm": "net8.0",
+                  "source": "src/Bar.cs", "declaration": "class Bar.method int Go(int)",
+                  "rule": "S134", "tokenDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "sites": [{ "token": 3, "offset": 0 }]
+                }
+              ]
+            }
+            """;
+        var baseline = Baseline.Parse(json);
+        var roundTripped = Baseline.Parse(baseline.ToJson());
+        Assert.Equal(2, roundTripped.Allowances.Count);
+        Assert.Equal(new string('d', 64), roundTripped.GeneratedExclusions["Consumer/obj/Debug/net8.0/Gen.g.cs"]);
+    }
+
+    [Fact]
+    public void Reduce_LowersCeilingToMeasuredValue()
+    {
+        var baseline = ParseBaseline("""
+            {
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric", "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs", "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
+            }
+            """);
+        var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 61));
+        var reduced = baseline.Reduce(scan, out var stillOver);
+        Assert.Empty(stillOver);
+        var allowance = Assert.IsType<MetricAllowance>(Assert.Single(reduced.Allowances));
+        Assert.Equal(61, allowance.Ceiling);
+    }
+
+    [Fact]
+    public void Reduce_DropsAllowanceWithNoMatchingViolation()
+    {
+        var baseline = ParseBaseline("""
+            {
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric", "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs", "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
+            }
+            """);
+        var reduced = baseline.Reduce(Scan(), out var stillOver);
+        Assert.Empty(stillOver);
+        Assert.Empty(reduced.Allowances);
+    }
+
+    [Fact]
+    public void Reduce_RefusesViolationAboveCeiling()
+    {
+        var baseline = ParseBaseline("""
+            {
+              "schema": "iimmpact-quality-baseline", "version": 2,
+              "policy": "iimmpact-quality/v2",
+              "allowances": [{
+                "kind": "metric", "project": "Consumer.csproj", "tfm": "net8.0",
+                "source": "src/Foo.cs", "declaration": "class Foo.method int Run(int)",
+                "rule": "S138", "ceiling": 61
+              }]
+            }
+            """);
+        var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 71));
+        baseline.Reduce(scan, out var stillOver);
+        var over = Assert.Single(stillOver);
+        Assert.Equal("S138", over.Rule);
     }
 }

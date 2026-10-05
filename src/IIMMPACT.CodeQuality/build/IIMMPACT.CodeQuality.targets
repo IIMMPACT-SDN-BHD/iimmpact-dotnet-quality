@@ -1,19 +1,61 @@
 <Project>
-
-  <!--
-    When a consumer passes -p:IimmpactQualitySarif=true, the compiler writes a SARIF
-    diagnostics log per project and target framework. iimmpact-quality reads these.
-    The directory lives under obj/iimmpact-quality so the tool can delete it before
-    each build and detect which projects produced logs.
-  -->
   <PropertyGroup Condition="'$(IimmpactQualitySarif)' == 'true'">
-    <IimmpactQualitySarifDir>$(MSBuildProjectDirectory)\obj\iimmpact-quality</IimmpactQualitySarifDir>
-    <ErrorLog>$(IimmpactQualitySarifDir)\$(MSBuildProjectName).$(TargetFramework).sarif,version=2.1</ErrorLog>
+    <IimmpactQualitySarifDir Condition="'$(IimmpactQualitySarifDir)' == ''">$(MSBuildProjectDirectory)\obj\iimmpact-quality</IimmpactQualitySarifDir>
+    <ErrorLog>$(IimmpactQualitySarifDir)\scan.sarif%2Cversion=2.1</ErrorLog>
+    <ProvideCommandLineArgs>true</ProvideCommandLineArgs>
+    <ReportSuppressedDiagnostics>true</ReportSuppressedDiagnostics>
+    <PreferredUILang>en-US</PreferredUILang>
   </PropertyGroup>
 
-  <!-- csc does not create missing directories for ErrorLog. -->
-  <Target Name="IimmpactQualityEnsureSarifDir" BeforeTargets="CoreCompile" Condition="'$(IimmpactQualitySarif)' == 'true'">
+  <Target Name="IimmpactQualityEnsureSarifDir"
+          BeforeTargets="IimmpactQualityAddSentinel"
+          Condition="'$(IimmpactQualitySarif)' == 'true'">
     <MakeDir Directories="$(IimmpactQualitySarifDir)" />
   </Target>
 
+  <Target Name="IimmpactQualityAddSentinel"
+          BeforeTargets="CoreCompile"
+          Condition="'$(IimmpactQualitySarif)' == 'true' and '$(TargetFramework)' != '' and '$(IsCrossTargetingBuild)' != 'true'">
+    <ItemGroup>
+      <_IimmpactSentinelLine Include="internal static class IimmpactQualityExecutionSentinel {" />
+      <_IimmpactSentinelLine Include="  internal static async System.Threading.Tasks.Task NetAnalyzerAsync() { System.Threading.Thread.Sleep(1)%3B await System.Threading.Tasks.Task.Yield()%3B }" />
+      <_IimmpactSentinelLine Include="  internal static System.DateTime BannedApi() =&gt; System.DateTime.Now%3B" />
+      <_IimmpactSentinelLine Include="  internal static int Sonar(int x) { if (x &gt; 0) { if (x &gt; 1) { if (x &gt; 2) { if (x &gt; 3) { if (x &gt; 4) return x%3B } } } } return 0%3B }" />
+      <_IimmpactSentinelLine Include="  private static void CodeStyle() { }" />
+      <_IimmpactSentinelLine Include="}" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IimmpactQualitySarifDir)\execution-sentinel.cs"
+                      Lines="@(_IimmpactSentinelLine)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <Compile Include="$(IimmpactQualitySarifDir)\execution-sentinel.cs" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="IimmpactQualityWriteScanEvidence"
+          AfterTargets="CoreCompile"
+          Condition="'$(IimmpactQualitySarif)' == 'true' and '$(TargetFramework)' != '' and '$(IsCrossTargetingBuild)' != 'true'">
+    <PropertyGroup>
+      <_IimmpactAnalyzers>@(Analyzer->'%(FullPath)', '%0A')</_IimmpactAnalyzers>
+      <_IimmpactConfigs>@(EditorConfigFiles->'%(FullPath)', '%0A')</_IimmpactConfigs>
+      <_IimmpactAdditionalFiles>@(AdditionalFiles->'%(FullPath)', '%0A')</_IimmpactAdditionalFiles>
+      <_IimmpactSources>@(Compile->'%(FullPath)', '%0A')</_IimmpactSources>
+    </PropertyGroup>
+    <ItemGroup>
+      <_IimmpactScanEvidence Include="project=$(MSBuildProjectFullPath)" />
+      <_IimmpactScanEvidence Include="tfm=$(TargetFramework)" />
+      <_IimmpactScanEvidence Include="skipped-analyzers=$(_SkipAnalyzers)" />
+      <_IimmpactScanEvidence Include="analyzers:" />
+      <_IimmpactScanEvidence Include="$(_IimmpactAnalyzers)" />
+      <_IimmpactScanEvidence Include="configs:" />
+      <_IimmpactScanEvidence Include="$(_IimmpactConfigs)" />
+      <_IimmpactScanEvidence Include="additional-files:" />
+      <_IimmpactScanEvidence Include="$(_IimmpactAdditionalFiles)" />
+      <_IimmpactScanEvidence Include="sources:" />
+      <_IimmpactScanEvidence Include="$(_IimmpactSources)" />
+      <_IimmpactScanEvidence Include="csc-args:" />
+      <_IimmpactScanEvidence Include="@(CscCommandLineArgs)" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(IimmpactQualitySarifDir)\scan.txt"
+                      Lines="@(_IimmpactScanEvidence)" Overwrite="true" />
+  </Target>
 </Project>

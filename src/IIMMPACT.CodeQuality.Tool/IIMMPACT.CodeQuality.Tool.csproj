@@ -14,7 +14,19 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Syntax-only declaration attribution for per-declaration baseline entries. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="IIMMPACT.CodeQuality.Tool.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="../IIMMPACT.CodeQuality/IIMMPACT.CodeQuality.globalconfig" LogicalName="Policy.IIMMPACT.CodeQuality.globalconfig" />
+    <EmbeddedResource Include="../IIMMPACT.CodeQuality/SonarLint.xml" LogicalName="Policy.SonarLint.xml" />
+    <EmbeddedResource Include="../IIMMPACT.CodeQuality/CodeMetricsConfig.txt" LogicalName="Policy.CodeMetricsConfig.txt" />
+    <EmbeddedResource Include="../IIMMPACT.CodeQuality/BannedSymbols.IIMMPACT.txt" LogicalName="Policy.BannedSymbols.IIMMPACT.txt" />
   </ItemGroup>
 
 </Project>

@@ -80,6 +80,7 @@ public class ParsingTests
         Assert.Equal(12, s134.Line);
         Assert.Equal(9, s134.Column);
         Assert.Null(s134.Metric);
+        Assert.False(s134.SuppressedInSource);
 
         var s138 = Assert.Single(diagnostics, d => d.RuleId == "S138");
         Assert.Equal("Consumer/Big.cs", s138.Path);
@@ -87,43 +88,70 @@ public class ParsingTests
     }
 
     [Fact]
-    public void SarifParser_DedupesIdenticalDiagnosticsAcrossTargetFrameworks()
+    public void SarifParser_MarksInSourceSuppressions()
     {
-        // Multi-TFM builds emit the same result in each log; the tool dedupes them.
-        var diagnostics = new List<Diagnostic>
-        {
-            new("S134", "src/Foo.cs", 10, 5, "Refactor this code.", null),
-            new("S134", "src/Foo.cs", 10, 5, "Refactor this code.", null),
-        };
-        var current = BaselineState.FromDiagnostics(diagnostics.Distinct().ToList());
-        Assert.Equal(1, current.TotalCount);
+        var sarif = """
+            {
+              "version": "2.1.0",
+              "runs": [{
+                "results": [{
+                  "ruleId": "S134",
+                  "level": "warning",
+                  "message": { "text": "Refactor this code." },
+                  "suppressions": [{ "kind": "inSource" }],
+                  "locations": [{
+                    "physicalLocation": {
+                      "artifactLocation": { "uri": "file:///repo/Foo.cs" },
+                      "region": { "startLine": 1, "startColumn": 1 }
+                    }
+                  }]
+                }]
+              }]
+            }
+            """;
+        var diagnostic = Assert.Single(SarifLogParser.Parse(sarif, "/repo"));
+        Assert.True(diagnostic.SuppressedInSource);
     }
 
     [Fact]
-    public void BaselineJson_HasSortedKeysAndMetricOnlyOnMetricRules()
+    public void SarifParser_ReadsAnalyzerFailuresButDoesNotTreatDescriptorsAsExecution()
     {
-        var diagnostics = new List<Diagnostic>
-        {
-            new("S138", "src/B.cs", 1, 1, "This method 'x' has 61 lines, which is greater than the 60 lines authorized.", 61),
-            new("RS0030", "src/A.cs", 2, 3, "The symbol 'Console' is banned in this project", null),
-        };
-        var json = BaselineState.FromDiagnostics(diagnostics).ToJson();
-
-        var expected = """
+        var sarif = """
             {
-              "src/A.cs": {
-                "RS0030": {
-                  "count": 1
-                }
-              },
-              "src/B.cs": {
-                "S138": {
-                  "count": 1,
-                  "max": 61
-                }
-              }
+              "version": "2.1.0",
+              "runs": [{
+                "tool": {
+                  "driver": {
+                    "name": "csc",
+                    "rules": [
+                      { "id": "CA1502" },
+                      { "id": "S134" },
+                      { "id": "RS0030" }
+                    ]
+                  }
+                },
+                "results": [{
+                  "ruleId": "AD0001",
+                  "level": "warning",
+                  "message": { "text": "Analyzer 'Sonar' threw an exception" },
+                  "locations": []
+                }]
+              }]
             }
             """;
-        Assert.Equal(expected, json.Trim());
+        var diagnostic = Assert.Single(SarifLogParser.Parse(sarif, "/repo"));
+        Assert.Equal("AD0001", diagnostic.RuleId);
+        Assert.Contains("threw an exception", diagnostic.Message);
+    }
+
+    [Fact]
+    public void SarifParser_RejectsManagedResultWithoutPhysicalLocation()
+    {
+        var sarif = """
+            {"version":"2.1.0","runs":[{"results":[{
+              "ruleId":"RS0030","message":{"text":"banned"},"locations":[]
+            }]}]}
+            """;
+        Assert.Throws<ScanException>(() => SarifLogParser.Parse(sarif, "/repo"));
     }
 }
