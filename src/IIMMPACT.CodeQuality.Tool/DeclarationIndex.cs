@@ -10,7 +10,8 @@ internal sealed record EntityKey(CompilationKey Compilation, string Source, stri
 internal sealed class DeclarationIndex
 {
     private const string FileDeclaration = "file";
-    private readonly Dictionary<string, TextSpan> _byIdentity;
+    // Partial declarations of one type or method share an identity and own several spans.
+    private readonly Dictionary<string, List<TextSpan>> _byIdentity;
     private readonly List<(TextSpan Span, string Identity)> _bySpan;
     private readonly SyntaxNode _root;
     private readonly SourceText _text;
@@ -25,9 +26,18 @@ internal sealed class DeclarationIndex
         _bySpan = [];
         foreach (var node in _root.DescendantNodes())
         {
-            if (DeclarationNamer.TryName(node) is not { } identity) continue;
-            if (!_byIdentity.TryAdd(identity, node.Span))
-                throw new ScanException($"ambiguous declaration identity '{identity}' in {source}");
+            if (DeclarationNamer.TryName(node) is not { } name) continue;
+            var identity = name;
+            if (_byIdentity.TryGetValue(name, out var spans) && !IsPartial(node))
+            {
+                // Same-named declarations in separate scopes, such as local functions in sibling
+                // blocks, are distinguished by their order in the file.
+                var ordinal = 2;
+                while (_byIdentity.ContainsKey($"{name}#{ordinal}")) ordinal++;
+                identity = $"{name}#{ordinal}";
+            }
+            if (!_byIdentity.TryGetValue(identity, out spans)) _byIdentity[identity] = spans = [];
+            spans.Add(node.Span);
             _bySpan.Add((node.Span, identity));
         }
     }
@@ -82,10 +92,13 @@ internal sealed class DeclarationIndex
     private IEnumerable<SyntaxToken> TokensOf(string declaration)
     {
         if (declaration == FileDeclaration) return _root.DescendantTokens(descendIntoTrivia: false);
-        if (_byIdentity.TryGetValue(declaration, out var span))
-            return _root.FindNode(span, getInnermostNodeForTie: true).DescendantTokens(descendIntoTrivia: false);
+        if (_byIdentity.TryGetValue(declaration, out var spans))
+            return spans.SelectMany(span => _root.FindNode(span, getInnermostNodeForTie: true).DescendantTokens(descendIntoTrivia: false));
         throw new ScanException($"declaration '{declaration}' is not present in the syntax index");
     }
+
+    private static bool IsPartial(SyntaxNode node) =>
+        node is MemberDeclarationSyntax member && member.Modifiers.Any(SyntaxKind.PartialKeyword);
 
     private static void WriteField(Stream stream, string value)
     {
@@ -95,9 +108,11 @@ internal sealed class DeclarationIndex
     }
 
     public static DeclarationIndex Build(
-        string filePath, CompilationKey compilation, string relativeSource, CSharpParseOptions? parseOptions = null)
+        string filePath, CompilationKey compilation, string relativeSource,
+        CSharpParseOptions? parseOptions = null, Encoding? encoding = null)
     {
-        var text = SourceText.From(File.ReadAllText(filePath), Encoding.UTF8);
+        using var stream = File.OpenRead(filePath);
+        var text = SourceText.From(stream, encoding ?? Encoding.UTF8);
         var tree = CSharpSyntaxTree.ParseText(text, parseOptions ?? CSharpParseOptions.Default, filePath);
         if (tree.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error))
             throw new ScanException($"cannot parse compile input {relativeSource} with its compiler parse options");
@@ -113,8 +128,10 @@ internal sealed class DeclarationIndex
             MethodDeclarationSyntax m => $"{Parent(m)}/method {Explicit(m.ExplicitInterfaceSpecifier)}{m.Identifier.Text}{Arity(m.TypeParameterList)}{Parameters(m.ParameterList)}",
             ConstructorDeclarationSyntax c => $"{Parent(c)}/ctor {(c.Modifiers.Any(SyntaxKind.StaticKeyword) ? "static " : string.Empty)}{c.Identifier.Text}{Parameters(c.ParameterList)}",
             DestructorDeclarationSyntax d => $"{Parent(d)}/dtor {d.Identifier.Text}()",
-            OperatorDeclarationSyntax o => $"{Parent(o)}/operator {o.OperatorToken.Text}{Parameters(o.ParameterList)}",
-            ConversionOperatorDeclarationSyntax c => $"{Parent(c)}/conversion {c.Type}{Parameters(c.ParameterList)}",
+            OperatorDeclarationSyntax o => $"{Parent(o)}/operator {Checked(o.CheckedKeyword)}{o.OperatorToken.Text}{Parameters(o.ParameterList)}",
+            ConversionOperatorDeclarationSyntax c => $"{Parent(c)}/conversion {c.ImplicitOrExplicitKeyword.Text} {Checked(c.CheckedKeyword)}{TypeKey(c.Type)}{Parameters(c.ParameterList)}",
+            FieldDeclarationSyntax f => $"{Parent(f)}/field {string.Join(",", f.Declaration.Variables.Select(v => v.Identifier.Text))}",
+            EventFieldDeclarationSyntax e => $"{Parent(e)}/event {string.Join(",", e.Declaration.Variables.Select(v => v.Identifier.Text))}",
             PropertyDeclarationSyntax p => $"{Parent(p)}/property {Explicit(p.ExplicitInterfaceSpecifier)}{p.Identifier.Text}",
             IndexerDeclarationSyntax i => $"{Parent(i)}/indexer {Explicit(i.ExplicitInterfaceSpecifier)}this{BracketParameters(i.ParameterList)}",
             EventDeclarationSyntax e => $"{Parent(e)}/event {Explicit(e.ExplicitInterfaceSpecifier)}{e.Identifier.Text}",
@@ -154,6 +171,9 @@ internal sealed class DeclarationIndex
             var parent = ns.Parent is BaseNamespaceDeclarationSyntax enclosing ? NamespaceName(enclosing) : "global";
             return $"{parent}/namespace {ns.Name}";
         }
+
+        private static string Checked(SyntaxToken keyword) =>
+            keyword.IsKind(SyntaxKind.CheckedKeyword) ? "checked " : string.Empty;
 
         private static string Explicit(ExplicitInterfaceSpecifierSyntax? specifier) =>
             specifier is null ? string.Empty : specifier.Name + ".";

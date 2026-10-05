@@ -3,7 +3,6 @@
   <PropertyGroup>
     <!-- Report IDE0051/IDE0052/IDE0060 and other code-style diagnostics during build. -->
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
-    <ArtifactsProjectName Condition="'$(IimmpactQualitySarif)' == 'true' and '$(IimmpactQualityRoot)' != ''">$([System.IO.Path]::GetRelativePath('$(IimmpactQualityRoot)', '$(MSBuildProjectFullPath)').Replace('/', '_').Replace('\', '_'))</ArtifactsProjectName>
   </PropertyGroup>
 
   <ItemGroup>

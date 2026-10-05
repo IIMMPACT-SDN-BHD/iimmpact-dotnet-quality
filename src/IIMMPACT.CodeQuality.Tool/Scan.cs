@@ -27,6 +27,8 @@ internal sealed class CompilationScan
     public required CSharpCommandLineArguments CommandLine { get; init; }
     public required List<Diagnostic> Diagnostics { get; init; }
     public required string SentinelPath { get; init; }
+    /// <summary>Sources analyzers treat as generated, including SDK-written files. Filled by the scan.</summary>
+    public HashSet<string> GeneratedSources { get; } = new(StringComparer.Ordinal);
 }
 
 internal sealed class CompleteScan : IDisposable
@@ -67,7 +69,7 @@ internal sealed class CompleteScan : IDisposable
 internal static class ScanCollector
 {
     private const string FileEntity = "file";
-    private static readonly string[] SentinelRules = ["CA1849", "RS0030", "S134", "IDE0051", "CS8602"];
+    private static readonly string[] SentinelRules = ["CA1849", "CA2022", "RS0030", "S134", "IDE0051", "CS8602"];
     private const int MinimumSdkMajor = 9;
 
     public static async Task<CompleteScan> CollectAsync(
@@ -75,10 +77,11 @@ internal static class ScanCollector
     {
         await RequireSupportedSdkAsync(solutionDir);
         var plans = await EvaluateClosureAsync(solutionProjects, solutionDir);
-        if (plans.Count == 0) throw new ScanException("no C# compilations were declared");
+        if (!plans.Any(plan => plan.IsCSharp)) throw new ScanException("no C# compilations were declared");
 
         var invocationDir = Path.Combine(Path.GetTempPath(), $"iimmpact-quality-{Guid.NewGuid():N}");
         Directory.CreateDirectory(invocationDir);
+        var artifactNames = WriteArtifactNamesProps(invocationDir, solutionDir);
         try
         {
             var compilations = new List<CompilationScan>();
@@ -93,12 +96,17 @@ internal static class ScanCollector
                     "build", plan.ProjectPath, "-f", plan.TargetFramework, "--no-dependencies",
                     "--no-incremental", "--nologo", "--artifacts-path", artifactsDir,
                     "-p:IimmpactQualitySarif=true", $"-p:IimmpactQualitySarifDir={evidenceDir}",
-                    $"-p:IimmpactQualityRoot={solutionDir}",
+                    $"-p:CustomBeforeDirectoryBuildProps={artifactNames}",
                     "-p:PreferredUILang=en-US",
+                    // The gate decides failure from the SARIF log; promoting the injected
+                    // sentinel warnings to errors would only break the scan build.
+                    "-p:TreatWarningsAsErrors=false", "-p:WarningsAsErrors=", "-p:CodeAnalysisTreatWarningsAsErrors=false",
                 ], solutionDir);
                 Console.Write(output);
                 if (exit != 0) throw new ScanException($"dotnet build failed for {plan.Key.Project} ({plan.TargetFramework}) with exit code {exit}");
-                compilations.Add(ReadCompilation(plan, evidenceDir, solutionDir));
+                // Non-C# references (for example F#) are built so dependants can compile,
+                // but they carry no C# analysis.
+                if (plan.IsCSharp) compilations.Add(ReadCompilation(plan, evidenceDir, solutionDir));
             }
 
             var generated = ClassifyGeneratedSources(solutionDir, compilations);
@@ -127,7 +135,31 @@ internal static class ScanCollector
             throw new ScanException($".NET SDK {version} is not supported; iimmpact-quality requires .NET SDK {MinimumSdkMajor} or later (target frameworks may stay older)");
     }
 
-    private sealed record CompilationPlan(string ProjectPath, string TargetFramework, CompilationKey Key);
+    // All scan builds share one artifacts directory, where the SDK names each project's folder
+    // after the project file. Same-named projects in different folders would overwrite each
+    // other, so name the folder after a hash of the solution-relative path. The SDK fixes this
+    // name before package props load. CustomBeforeDirectoryBuildProps is imported earlier, is not
+    // used by the SDK (unlike CustomAfterDirectoryBuildProps), and as a global property it also
+    // applies when referenced projects are evaluated.
+    private static string WriteArtifactNamesProps(string invocationDir, string solutionDir)
+    {
+        var path = Path.Combine(invocationDir, "artifact-names.props");
+        var root = System.Security.SecurityElement.Escape(solutionDir);
+        File.WriteAllText(path, $$"""
+            <Project>
+              <PropertyGroup>
+                <_IimmpactRelativeProject>$([System.IO.Path]::GetRelativePath('{{root}}', '$(MSBuildProjectFullPath)'))</_IimmpactRelativeProject>
+                <ArtifactsProjectName>$(MSBuildProjectName)-$([MSBuild]::StableStringHash('$(_IimmpactRelativeProject)'))</ArtifactsProjectName>
+              </PropertyGroup>
+            </Project>
+            """);
+        return path;
+    }
+
+    private sealed record CompilationPlan(string ProjectPath, string TargetFramework, CompilationKey Key)
+    {
+        public bool IsCSharp => ProjectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
+    }
 
     private static async Task<List<CompilationPlan>> EvaluateClosureAsync(
         List<string> solutionProjects, string solutionDir)
@@ -239,6 +271,7 @@ internal static class ScanCollector
             throw new ScanException($"{label}: compiler diagnostics must use an English PreferredUILang");
 
         ValidateCommandLinePaths(label, evidence, commandLine, plan.ProjectPath);
+        ValidateAnalyzerOrigins(label, evidence);
         var diagnostics = SarifLogParser.Parse(File.ReadAllText(sarifPath), solutionDir);
         var sentinel = QualityGate.RealPath(Path.Combine(evidenceDir, "execution-sentinel.cs"));
         foreach (var rule in SentinelRules)
@@ -278,8 +311,23 @@ internal static class ScanCollector
         if (!Real(evidence.Analyzers, baseDir).SetEquals(Real(args.AnalyzerReferences.Select(a => a.FilePath), baseDir))) throw new ScanException($"{label}: analyzer evidence does not match parsed csc inputs");
     }
 
+    // Analyzers and source generators must come from the SDK or a NuGet package, whose identity
+    // and version are reviewed in project files. A locally built or copied analyzer could emit
+    // or suppress code that the gate never sees.
+    private static void ValidateAnalyzerOrigins(string label, Evidence evidence)
+    {
+        var roots = new[] { evidence.SdkRoot, evidence.NuGetRoot }
+            .Select(root => QualityGate.RealPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar)
+            .ToArray();
+        var foreign = evidence.Analyzers.Select(QualityGate.RealPath)
+            .Where(path => !roots.Any(root => path.StartsWith(root, StringComparison.Ordinal)))
+            .ToList();
+        if (foreign.Count > 0)
+            throw new ScanException($"{label}: analyzers must come from the .NET SDK or a NuGet package; not supported: {string.Join(", ", foreign)}");
+    }
+
     private sealed record Evidence(
-        string Project, string TargetFramework, bool SkippedAnalyzers,
+        string Project, string TargetFramework, bool SkippedAnalyzers, string SdkRoot, string NuGetRoot,
         List<string> Analyzers, List<string> Configs, List<string> AdditionalFiles,
         List<string> Sources, List<string> CscArgs);
 
@@ -287,6 +335,8 @@ internal static class ScanCollector
     {
         string? project = null;
         string? tfm = null;
+        string? sdkRoot = null;
+        string? nugetRoot = null;
         var skipped = false;
         var sections = new Dictionary<string, List<string>>(StringComparer.Ordinal)
         {
@@ -297,6 +347,8 @@ internal static class ScanCollector
         {
             if (line.StartsWith("project=", StringComparison.Ordinal)) { project = line[8..]; continue; }
             if (line.StartsWith("tfm=", StringComparison.Ordinal)) { tfm = line[4..]; continue; }
+            if (line.StartsWith("sdk-root=", StringComparison.Ordinal)) { sdkRoot = line[9..]; continue; }
+            if (line.StartsWith("nuget-root=", StringComparison.Ordinal)) { nugetRoot = line[11..]; continue; }
             if (line.StartsWith("skipped-analyzers=", StringComparison.Ordinal))
             {
                 if (!bool.TryParse(line[18..], out skipped) && line[18..].Length > 0) throw new ScanException("invalid skipped-analyzers evidence");
@@ -307,9 +359,10 @@ internal static class ScanCollector
             if (section is null) throw new ScanException("malformed compiler evidence");
             if (line.Length > 0) sections[section].Add(line);
         }
-        if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(tfm) || sections["csc-args"].Count == 0)
+        if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(tfm) || sections["csc-args"].Count == 0
+            || string.IsNullOrWhiteSpace(sdkRoot) || string.IsNullOrWhiteSpace(nugetRoot))
             throw new ScanException("incomplete compiler evidence");
-        return new(project, tfm, skipped, sections["analyzers"], sections["configs"], sections["additional-files"], sections["sources"], sections["csc-args"]);
+        return new(project, tfm, skipped, sdkRoot, nugetRoot, sections["analyzers"], sections["configs"], sections["additional-files"], sections["sources"], sections["csc-args"]);
     }
 
     private static List<ScanViolation> Attribute(List<CompilationScan> compilations, string solutionDir)
@@ -330,7 +383,7 @@ internal static class ScanCollector
                     throw new ScanException($"{diagnostic.Path}({diagnostic.Line},{diagnostic.Column}): {diagnostic.RuleId} did not report a parseable metric");
 
                 if (!indexes.TryGetValue(source, out var index))
-                    indexes[source] = index = DeclarationIndex.Build(source, compilation.Key, diagnostic.Path, compilation.CommandLine.ParseOptions);
+                    indexes[source] = index = DeclarationIndex.Build(source, compilation.Key, diagnostic.Path, compilation.CommandLine.ParseOptions, compilation.CommandLine.Encoding);
                 var owner = index.OwnerOf(diagnostic.Line, diagnostic.Column, out _);
                 var declaration = diagnostic.RuleId == "S104" ? FileEntity : owner?.Identity.Split('|', 3)[2] ?? FileEntity;
                 var physical = new DiagnosticSite(diagnostic.Path, diagnostic.Line, diagnostic.Column);
@@ -360,13 +413,21 @@ internal static class ScanCollector
         var candidates = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var compilation in compilations)
         {
-            foreach (var source in compilation.Sources.Where(s => s != compilation.SentinelPath))
+            var sources = compilation.Sources.Where(s => s != compilation.SentinelPath)
+                .ToDictionary(s => s, s => CSharpSyntaxTree.ParseText(File.ReadAllText(s), compilation.CommandLine.ParseOptions).GetCompilationUnitRoot());
+            var attributeNames = GeneratedAttributeNames(sources.Values);
+            foreach (var (source, root) in sources)
             {
-                if (IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath)) continue;
+                if (IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath))
+                {
+                    compilation.GeneratedSources.Add(source);
+                    continue;
+                }
                 var options = Policy.EffectiveOptions(compilation, source);
-                var marked = IsAnalyzerRecognizedGenerated(source, compilation.CommandLine.ParseOptions)
+                var marked = IsAnalyzerRecognizedGenerated(source, root, attributeNames)
                     || (options.TryGetValue("generated_code", out var generated) && generated.Equals("true", StringComparison.OrdinalIgnoreCase));
                 if (!marked) continue;
+                compilation.GeneratedSources.Add(source);
                 var relative = QualityGate.RelativePath(solutionDir, source);
                 if (relative.StartsWith("../", StringComparison.Ordinal)) throw new ScanException($"generated compile input is outside the solution repository: {source}");
                 candidates[relative] = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source))).ToLowerInvariant();
@@ -394,20 +455,38 @@ internal static class ScanCollector
                 && root.AttributeLists.All(list => list.Target?.Identifier.IsKind(SyntaxKind.AssemblyKeyword) == true);
     }
 
-    internal static bool IsAnalyzerRecognizedGenerated(string source, CSharpParseOptions options)
+    private static readonly string[] GeneratedAttributes =
+        ["CompilerGenerated", "CompilerGeneratedAttribute", "GeneratedCode", "GeneratedCodeAttribute"];
+
+    // The generated-code attribute names in this compilation, including `using X = ...` aliases
+    // (local or global) that point at them. ValueText strips `@` escapes.
+    private static HashSet<string> GeneratedAttributeNames(IEnumerable<CompilationUnitSyntax> roots)
+    {
+        var names = new HashSet<string>(GeneratedAttributes, StringComparer.Ordinal);
+        foreach (var alias in roots.SelectMany(root => root.DescendantNodes().OfType<UsingDirectiveSyntax>()))
+        {
+            if (alias.Alias is not null && alias.NamespaceOrType is { } target && names.Contains(LastIdentifier(target)))
+            {
+                names.Add(alias.Alias.Name.Identifier.ValueText);
+                names.Add(alias.Alias.Name.Identifier.ValueText + "Attribute");
+            }
+        }
+        return names;
+    }
+
+    private static string LastIdentifier(SyntaxNode name) => name.DescendantTokens()
+        .LastOrDefault(token => token.IsKind(SyntaxKind.IdentifierToken)).ValueText;
+
+    private static bool IsAnalyzerRecognizedGenerated(string source, CompilationUnitSyntax root, HashSet<string> attributeNames)
     {
         var name = Path.GetFileName(source);
         if (name.EndsWith(".designer.cs", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith(".generated.cs", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith(".g.cs", StringComparison.OrdinalIgnoreCase)
             || name.EndsWith(".g.i.cs", StringComparison.OrdinalIgnoreCase)) return true;
-        var root = CSharpSyntaxTree.ParseText(File.ReadAllText(source), options).GetCompilationUnitRoot();
         if (HasAutoGeneratedHeader(root)) return true;
-        return root.DescendantNodes().OfType<AttributeSyntax>().Any(attribute =>
-        {
-            var shortName = attribute.Name.ToString().Split('.').Last();
-            return shortName is "CompilerGenerated" or "CompilerGeneratedAttribute" or "GeneratedCode" or "GeneratedCodeAttribute";
-        });
+        return root.DescendantNodes().OfType<AttributeSyntax>()
+            .Any(attribute => attributeNames.Contains(LastIdentifier(attribute.Name)));
     }
 
     private static bool HasAutoGeneratedHeader(CompilationUnitSyntax root) => root.GetLeadingTrivia()

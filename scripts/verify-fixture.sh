@@ -650,4 +650,44 @@ expect_fail 2 "nullable disabled project" dotnet iimmpact-quality check "$SLN" -
 assert_contains "$LAST_LOG" "missing fresh CS8602 analyzer execution sentinel" "nullable sentinel named"
 git checkout -- Consumer/Consumer.csproj
 
+# --- ways to move or hide a diagnostic ---------------------------------------
+
+log "#line cannot move or hide diagnostics"
+python3 "$REPO_ROOT/scripts/rule-cases.py" CA2000 bad Consumer/RuleProbe.cs
+printf '#line hidden\n%s\n#line default\n' "$(cat Consumer/RuleProbe.cs)" > Consumer/RuleProbe.cs
+expect_fail 2 "line hidden" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+assert_contains "$LAST_LOG" "#line directives move or hide diagnostics" "#line directive named"
+
+log "dotnet_code_quality options cannot exclude managed diagnostics"
+python3 "$REPO_ROOT/scripts/rule-cases.py" CA2000 bad Consumer/RuleProbe.cs
+printf 'root = true\n[*.cs]\ndotnet_code_quality.CA2000.excluded_symbol_names = Run\n' > Consumer/.editorconfig
+expect_fail 2 "analyzer option exclusion" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+assert_contains "$LAST_LOG" "dotnet_code_quality.ca2000.excluded_symbol_names" "weakening option named"
+rm Consumer/.editorconfig
+
+log "an aliased GeneratedCode attribute still needs an approved exclusion"
+cat > Consumer/RuleProbe.cs <<'EOF'
+using GC = System.CodeDom.Compiler.GeneratedCodeAttribute;
+
+[GC("tool", "1")]
+public class AliasProbe { public void Run() { var item = new AliasResource(); item.Touch(); } }
+public sealed class AliasResource : System.IDisposable { public void Touch() {} public void Dispose() {} }
+EOF
+expect_fail 1 "aliased generated attribute" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+assert_contains "$LAST_LOG" "generated compile input is not approved" "aliased attribute treated as generated"
+rm Consumer/RuleProbe.cs
+
+log "an older NetAnalyzers package cannot drop newer rules"
+sed -i.bak 's|</Project>|  <ItemGroup><PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="8.0.0" PrivateAssets="all" /></ItemGroup>\n</Project>|' Consumer/Consumer.csproj && rm Consumer/Consumer.csproj.bak
+expect_fail 2 "old NetAnalyzers" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+assert_contains "$LAST_LOG" "missing fresh CA2022 analyzer execution sentinel" "CA2022 sentinel named"
+git checkout -- Consumer/Consumer.csproj
+
+log "a clean TreatWarningsAsErrors project passes"
+sed -i.bak 's|<Nullable>enable</Nullable>|<Nullable>enable</Nullable>\n    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>|' Consumer/Consumer.csproj && rm Consumer/Consumer.csproj.bak
+dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE" > "$WORK/check-twae.log" 2>&1 \
+  || { echo "FAIL: clean TreatWarningsAsErrors project" >&2; cat "$WORK/check-twae.log" >&2; exit 1; }
+assert_contains "$WORK/check-twae.log" "PASS" "warnings-as-errors consumer passes"
+git checkout -- Consumer/Consumer.csproj
+
 log "ALL CHECKS PASSED"

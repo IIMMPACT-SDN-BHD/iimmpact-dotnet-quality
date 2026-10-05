@@ -34,36 +34,15 @@ internal static class Git
         return exit == 0 ? output : null;
     }
 
-    /// <summary>Lists every file a commit contains under a directory prefix.</summary>
-    public static async Task<List<string>> ListFilesAsync(string repoDir, string commit, string prefix = "")
-    {
-        var args = new List<string> { "ls-tree", "-r", "--name-only", commit };
-        if (!string.IsNullOrEmpty(prefix))
-        {
-            args.Add("--");
-            args.Add(prefix);
-        }
-        var (exit, output) = await ScanCollector.RunProcessAsync("git", args, repoDir);
-        if (exit != 0)
-        {
-            throw new ScanException($"git ls-tree failed for {commit}\n{output.Trim()}");
-        }
-        return output
-            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
-    }
-
-    /// <summary>A file's content hash inside a commit; null when absent.</summary>
-    public static async Task<string?> FileDigestAsync(string repoDir, string commit, string repoRelativePath)
+    /// <summary>
+    /// A file's bytes as `git checkout` would write them (eol and filter conversion applied),
+    /// so a clean CRLF checkout matches its commit. Null when the file is absent.
+    /// </summary>
+    public static async Task<byte[]?> CheckoutBytesAsync(string repoDir, string commit, string repoRelativePath)
     {
         var (exit, output) = await ScanCollector.RunProcessBytesAsync(
-            "git", ["show", $"{commit}:{ToGitPath(repoRelativePath)}"], repoDir);
-        if (exit != 0)
-        {
-            return null;
-        }
-        return Convert.ToHexString(
-            System.Security.Cryptography.SHA256.HashData(output)).ToLowerInvariant();
+            "git", ["cat-file", "--filters", $"{commit}:{ToGitPath(repoRelativePath)}"], repoDir);
+        return exit == 0 ? output : null;
     }
 
     public static async Task<string> ExportTreeAsync(string repoDir, string commit)

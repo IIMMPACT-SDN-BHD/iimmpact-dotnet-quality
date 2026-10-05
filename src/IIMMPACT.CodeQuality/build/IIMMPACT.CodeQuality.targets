@@ -22,6 +22,7 @@
       <_IimmpactSentinelLine Include="  internal static System.DateTime BannedApi() =&gt; System.DateTime.Now%3B" />
       <_IimmpactSentinelLine Include="  internal static int Sonar(int x) { if (x &gt; 0) { if (x &gt; 1) { if (x &gt; 2) { if (x &gt; 3) { if (x &gt; 4) return x%3B } } } } return 0%3B }" />
       <_IimmpactSentinelLine Include="  private static void CodeStyle() { }" />
+      <_IimmpactSentinelLine Include="  internal static void PartialRead(System.IO.Stream stream, byte[] buffer) { stream.Read(buffer, 0, buffer.Length)%3B }" />
       <_IimmpactSentinelLine Include="  internal static int NullableAnalysis(string%3F value) =&gt; value.Length%3B" />
       <_IimmpactSentinelLine Include="}" />
     </ItemGroup>
@@ -45,6 +46,8 @@
       <_IimmpactScanEvidence Include="project=$(MSBuildProjectFullPath)" />
       <_IimmpactScanEvidence Include="tfm=$(TargetFramework)" />
       <_IimmpactScanEvidence Include="skipped-analyzers=$(_SkipAnalyzers)" />
+      <_IimmpactScanEvidence Include="sdk-root=$(NetCoreRoot)" />
+      <_IimmpactScanEvidence Include="nuget-root=$(NuGetPackageRoot)" />
       <_IimmpactScanEvidence Include="analyzers:" />
       <_IimmpactScanEvidence Include="$(_IimmpactAnalyzers)" />
       <_IimmpactScanEvidence Include="configs:" />

@@ -1,7 +1,7 @@
 /// <summary>
-/// Bootstrap source validation: a baseline may only be proposed for sources that
-/// exactly match the approved Git revision. Generated files under obj are exempt;
-/// their provenance is recorded separately in the baseline.
+/// Bootstrap source validation: a baseline may only be proposed when every handwritten
+/// compile input, project file and Directory.Build file matches the approved Git revision
+/// as checked out, and the compile set is the one that revision evaluates to.
 /// </summary>
 internal static class Bootstrap
 {
@@ -45,19 +45,17 @@ internal static class Bootstrap
                 {
                     continue;
                 }
-                var committed = await Git.FileDigestAsync(repoRoot, commit, relative);
-                if (committed is null)
+                var committedBytes = await Git.CheckoutBytesAsync(repoRoot, commit, relative);
+                if (committedBytes is null)
                 {
                     failures.Add($"{label}: {relative} is not committed at {commit[..12]}");
                     continue;
                 }
-                var actual = Convert.ToHexString(
-                    System.Security.Cryptography.SHA256.HashData(
-                        await File.ReadAllBytesAsync(fullPath))).ToLowerInvariant();
-                if (actual != committed)
+                var actualBytes = await File.ReadAllBytesAsync(fullPath);
+                if (!committedBytes.AsSpan().SequenceEqual(actualBytes))
                 {
-                    var committedText = await Git.ReadFileAsync(repoRoot, commit, relative);
-                    if (committedText is null || !OnlyTemporaryQualityWiringDiffers(fullPath, committedText))
+                    var committedText = System.Text.Encoding.UTF8.GetString(committedBytes);
+                    if (!OnlyTemporaryQualityWiringDiffers(fullPath, committedText))
                     {
                         failures.Add(
                             $"{label}: {relative} differs from {commit[..12]}; " +

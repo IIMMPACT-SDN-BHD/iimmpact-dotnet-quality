@@ -43,10 +43,11 @@ internal static class Policy
                         && option.Value == ReportDiagnostic.Suppress))
                     failures.Add($"{label}: {rule} is suppressed by the actual csc command line");
             }
-            if (!ScanCollector.IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath)
-                && !ScanCollector.IsAnalyzerRecognizedGenerated(source, compilation.CommandLine.ParseOptions))
-                failures.AddRange(NullableDisables(source, compilation.CommandLine.ParseOptions)
-                    .Select(line => $"{QualityGate.RelativePath(solutionDir, source)}({line},1): error: #nullable disable suppresses managed nullable rules"));
+            if (!compilation.GeneratedSources.Contains(source))
+                failures.AddRange(ForbiddenDirectives(source, compilation.CommandLine.ParseOptions)
+                    .Select(found => $"{QualityGate.RelativePath(solutionDir, source)}({found.Line},1): error: {found.Reason}"));
+            failures.AddRange(WeakenedAnalyzerOptions(EffectiveOptions(compilation, source))
+                .Select(reason => $"{label}: {QualityGate.RelativePath(solutionDir, source)}: {reason}"));
         }
 
         failures.AddRange(compilation.Diagnostics
@@ -55,14 +56,45 @@ internal static class Policy
         return failures;
     }
 
-    private static IEnumerable<int> NullableDisables(string source, Microsoft.CodeAnalysis.CSharp.CSharpParseOptions options) =>
+    // In handwritten source, `#nullable disable` turns nullable rules off, and `#line` moves or
+    // hides diagnostics so they land on an approved declaration or disappear.
+    private static IEnumerable<(int Line, string Reason)> ForbiddenDirectives(string source, Microsoft.CodeAnalysis.CSharp.CSharpParseOptions options) =>
         Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(source), options)
             .GetRoot()
             .DescendantTrivia(descendIntoTrivia: true)
             .Select(trivia => trivia.GetStructure())
-            .OfType<Microsoft.CodeAnalysis.CSharp.Syntax.NullableDirectiveTriviaSyntax>()
-            .Where(directive => directive.SettingToken.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.DisableKeyword))
-            .Select(directive => directive.GetLocation().GetLineSpan().StartLinePosition.Line + 1);
+            .Select(directive => directive switch
+            {
+                Microsoft.CodeAnalysis.CSharp.Syntax.NullableDirectiveTriviaSyntax nullable
+                    when nullable.SettingToken.IsKind(Microsoft.CodeAnalysis.CSharp.SyntaxKind.DisableKeyword)
+                    => (directive, "#nullable disable suppresses managed nullable rules"),
+                Microsoft.CodeAnalysis.CSharp.Syntax.LineDirectiveTriviaSyntax or Microsoft.CodeAnalysis.CSharp.Syntax.LineSpanDirectiveTriviaSyntax
+                    => (directive, "#line directives move or hide diagnostics in handwritten source"),
+                _ => ((SyntaxNode?)null, string.Empty),
+            })
+            .Where(found => found.Item1 is not null)
+            .Select(found => (found.Item1!.GetLocation().GetLineSpan().StartLinePosition.Line + 1, found.Item2));
+
+    private static readonly ImmutableDictionary<string, string> ShippedCodeQualityOptions =
+        AnalyzerConfigSet.Create(ImmutableArray.Create(AnalyzerConfig.Parse(
+                SourceText.From(System.Text.Encoding.UTF8.GetString(OwnedFiles["IIMMPACT.CodeQuality.globalconfig"])),
+                "/IIMMPACT.CodeQuality.globalconfig")))
+            .GlobalConfigOptions.AnalyzerOptions
+            .Where(option => option.Key.StartsWith("dotnet_code_quality", StringComparison.OrdinalIgnoreCase))
+            .ToImmutableDictionary(StringComparer.OrdinalIgnoreCase);
+
+    // dotnet_code_quality options (excluded symbols, API surface, dispose analysis kind, ...)
+    // narrow what managed rules report, so only the package's own values are allowed.
+    private static IEnumerable<string> WeakenedAnalyzerOptions(ImmutableDictionary<string, string> effective)
+    {
+        foreach (var (key, value) in effective.Where(option => option.Key.StartsWith("dotnet_code_quality", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (!ShippedCodeQualityOptions.TryGetValue(key, out var shipped) || !shipped.Equals(value, StringComparison.OrdinalIgnoreCase))
+                yield return $"analyzer option '{key} = {value}' is not allowed; only the IIMMPACT.CodeQuality value applies";
+        }
+        foreach (var (key, shipped) in ShippedCodeQualityOptions.Where(option => !effective.ContainsKey(option.Key)))
+            yield return $"analyzer option '{key}' must be '{shipped}'";
+    }
 
     internal static ImmutableDictionary<string, string> EffectiveOptions(CompilationScan compilation, string source)
     {

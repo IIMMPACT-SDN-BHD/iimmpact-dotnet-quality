@@ -192,4 +192,59 @@ public class DeclarationIndexTests : IDisposable
         var suffix = identity[(identity.IndexOf('|', identity.IndexOf('|') + 1) + 1)..];
         Assert.Equal(before.TokenDigestOf(suffix), after.TokenDigestOf(suffix));
     }
+
+    [Fact]
+    public void PartialTypeParts_ShareOneIdentityAcrossTheFile()
+    {
+        var index = Index("""
+            public partial class Probe { public int A() => 1; }
+            public partial class Probe { public int B() => 2; }
+            """);
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method A()", index.OwnerOf(line: 1, column: 44));
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method B()", index.OwnerOf(line: 2, column: 44));
+    }
+
+    [Fact]
+    public void SameNamedLocalFunctionsInSiblingBlocks_GetOrderedIdentities()
+    {
+        var index = Index("""
+            public class Probe
+            {
+                public int Run(bool flag)
+                {
+                    if (flag) { int Local() => 1; return Local(); }
+                    else { int Local() => 2; return Local(); }
+                }
+            }
+            """);
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method Run(bool)/local Local()", index.OwnerOf(line: 5, column: 35));
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method Run(bool)/local Local()#2", index.OwnerOf(line: 6, column: 30));
+    }
+
+    [Fact]
+    public void CheckedOperator_IsDistinctFromUncheckedOperator()
+    {
+        var index = Index("""
+            public class Probe
+            {
+                public static Probe operator +(Probe a, Probe b) => a;
+                public static Probe operator checked +(Probe a, Probe b) => b;
+            }
+            """);
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/operator +(Probe,Probe)", index.OwnerOf(line: 3, column: 57));
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/operator checked +(Probe,Probe)", index.OwnerOf(line: 4, column: 65));
+    }
+
+    [Fact]
+    public void FieldInitializer_IsOwnedByTheField_NotTheWholeClass()
+    {
+        var index = Index("""
+            public class Probe
+            {
+                private static string _value = "value";
+                public int Run(int x) => x;
+            }
+            """);
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/field _value", index.OwnerOf(line: 3, column: 36));
+    }
 }

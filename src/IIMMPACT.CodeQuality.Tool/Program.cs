@@ -1,3 +1,5 @@
+// Lets the compiler command-line parser accept legacy <CodePage> settings such as 1252.
+System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 return await QualityGate.RunAsync(args);
 
 /// <summary>
@@ -73,7 +75,7 @@ internal static class QualityGate
 
     private static (string Command, string Solution, string OptionName, string Revision)? ParseArgs(string[] args)
     {
-        if (args.Length != 4 || args[0] is not ("check" or "baseline" or "bootstrap"))
+        if (args.Length != 4 || args[0] is not ("check" or "baseline" or "bootstrap") || string.IsNullOrWhiteSpace(args[1]))
         {
             return null;
         }
