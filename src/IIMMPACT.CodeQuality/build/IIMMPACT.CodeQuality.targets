@@ -15,7 +15,7 @@
 
   <Target Name="IimmpactQualityAddSentinel"
           BeforeTargets="CoreCompile"
-          Condition="'$(IimmpactQualitySarif)' == 'true' and '$(TargetFramework)' != '' and '$(IsCrossTargetingBuild)' != 'true'">
+          Condition="'$(IimmpactQualitySarif)' == 'true' and '$(TargetFramework)' != '' and '$(IsCrossTargetingBuild)' != 'true' and '$(Language)' == 'C#'">
     <ItemGroup>
       <_IimmpactSentinelLine Include="internal static class IimmpactQualityExecutionSentinel {" />
       <_IimmpactSentinelLine Include="  internal static async System.Threading.Tasks.Task NetAnalyzerAsync() { System.Threading.Thread.Sleep(1)%3B await System.Threading.Tasks.Task.Yield()%3B }" />
@@ -35,7 +35,7 @@
 
   <Target Name="IimmpactQualityWriteScanEvidence"
           AfterTargets="CoreCompile"
-          Condition="'$(IimmpactQualitySarif)' == 'true' and '$(TargetFramework)' != '' and '$(IsCrossTargetingBuild)' != 'true'">
+          Condition="'$(IimmpactQualitySarif)' == 'true' and '$(TargetFramework)' != '' and '$(IsCrossTargetingBuild)' != 'true' and '$(Language)' == 'C#'">
     <PropertyGroup>
       <_IimmpactAnalyzers>@(Analyzer->'%(FullPath)', '%0A')</_IimmpactAnalyzers>
       <_IimmpactConfigs>@(EditorConfigFiles->'%(FullPath)', '%0A')</_IimmpactConfigs>
