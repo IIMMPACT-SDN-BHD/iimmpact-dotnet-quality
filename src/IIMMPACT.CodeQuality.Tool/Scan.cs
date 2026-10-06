@@ -27,6 +27,11 @@ internal sealed class CompilationScan
     public required CSharpCommandLineArguments CommandLine { get; init; }
     public required List<Diagnostic> Diagnostics { get; init; }
     public required string SentinelPath { get; init; }
+    /// <summary>The .NET SDK root and every restored package folder, with a trailing separator.</summary>
+    public required IReadOnlyList<string> TrustedRoots { get; init; }
+    /// <summary>True for files shipped by the SDK or a restored package, such as a test SDK's Program.cs.</summary>
+    public bool IsTrustedFile(string path) =>
+        TrustedRoots.Any(root => QualityGate.RealPath(path).StartsWith(root, StringComparison.Ordinal));
     /// <summary>Sources analyzers treat as generated, including SDK-written files. Filled by the scan.</summary>
     public HashSet<string> GeneratedSources { get; } = new(StringComparer.Ordinal);
 }
@@ -283,7 +288,12 @@ internal static class ScanCollector
             throw new ScanException($"{label}: compiler diagnostics must use an English PreferredUILang");
 
         ValidateCommandLinePaths(label, evidence, commandLine, plan.ProjectPath);
-        ValidateAnalyzerOrigins(label, evidence);
+        var trustedRoots = TrustedRoots(label, evidence);
+        var foreign = evidence.Analyzers.Select(QualityGate.RealPath)
+            .Where(path => !trustedRoots.Any(root => path.StartsWith(root, StringComparison.Ordinal)))
+            .ToList();
+        if (foreign.Count > 0)
+            throw new ScanException($"{label}: analyzers must come from the .NET SDK or a restored NuGet package; not supported: {string.Join(", ", foreign)}");
         var diagnostics = SarifLogParser.Parse(File.ReadAllText(sarifPath), solutionDir);
         var sentinel = QualityGate.RealPath(Path.Combine(evidenceDir, "execution-sentinel.cs"));
         foreach (var rule in SentinelRules)
@@ -306,6 +316,7 @@ internal static class ScanCollector
             CommandLine = commandLine,
             Diagnostics = diagnostics,
             SentinelPath = sentinel,
+            TrustedRoots = trustedRoots,
         };
     }
 
@@ -323,10 +334,11 @@ internal static class ScanCollector
         if (!Real(evidence.Analyzers, baseDir).SetEquals(Real(args.AnalyzerReferences.Select(a => a.FilePath), baseDir))) throw new ScanException($"{label}: analyzer evidence does not match parsed csc inputs");
     }
 
-    // Analyzers and source generators must come from the SDK or from a package that restore
-    // resolved for this project (project.assets.json), in any configured package folder. Package
-    // identities and versions are reviewed in project files; a locally built or copied DLL is not.
-    private static void ValidateAnalyzerOrigins(string label, Evidence evidence)
+    // The SDK root and the folders of packages restore resolved for this project
+    // (project.assets.json), in any configured package folder. Package identities and versions
+    // are reviewed in project files, so analyzers and package-provided sources (for example the
+    // test SDK's Program.cs) from these folders are trusted; a locally built or copied file is not.
+    private static List<string> TrustedRoots(string label, Evidence evidence)
     {
         static string Directory(string path) => QualityGate.RealPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
         var allowed = new List<string> { Directory(evidence.SdkRoot) };
@@ -357,11 +369,7 @@ internal static class ScanCollector
         {
             throw new ScanException($"{label}: cannot read restore assets {evidence.AssetsFile}: {exception.Message}");
         }
-        var foreign = evidence.Analyzers.Select(QualityGate.RealPath)
-            .Where(path => !allowed.Any(root => path.StartsWith(root, StringComparison.Ordinal)))
-            .ToList();
-        if (foreign.Count > 0)
-            throw new ScanException($"{label}: analyzers must come from the .NET SDK or a restored NuGet package; not supported: {string.Join(", ", foreign)}");
+        return allowed;
     }
 
     private sealed record Evidence(
@@ -456,7 +464,7 @@ internal static class ScanCollector
             var globalAliases = GeneratedAttributeAliases(sources.Values, global: true);
             foreach (var (source, root) in sources)
             {
-                if (IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath))
+                if (IsSdkGenerated(source, compilation.SentinelPath) || compilation.IsTrustedFile(source))
                 {
                     compilation.GeneratedSources.Add(source);
                     continue;
@@ -484,23 +492,23 @@ internal static class ScanCollector
         return CSharpSyntaxTree.ParseText(text, commandLine.ParseOptions, path).GetCompilationUnitRoot();
     }
 
-    internal static bool IsSdkGenerated(string source, string projectPath, string sentinelPath)
+    // Build output the tool's own fresh obj folder holds: SDK and package targets write assembly
+    // info, global usings and similar files there (AssemblyInfo, GlobalUsings,
+    // MvcApplicationPartsAssemblyInfo, ...). Recognized by content, not name: an
+    // <auto-generated> header and nothing but assembly attributes or global usings, so no
+    // method or type can hide a violation in it.
+    internal static bool IsSdkGenerated(string source, string sentinelPath)
     {
         var invocationRoot = Directory.GetParent(Directory.GetParent(Path.GetDirectoryName(sentinelPath)!)!.FullName)!.FullName;
         var obj = Path.Combine(invocationRoot, "artifacts", "obj") + Path.DirectorySeparatorChar;
         if (!source.StartsWith(obj, StringComparison.OrdinalIgnoreCase)) return false;
-        var name = Path.GetFileName(source);
-        var projectName = Path.GetFileNameWithoutExtension(projectPath);
-        var recognizedName = name == $"{projectName}.AssemblyInfo.cs"
-            || name == $"{projectName}.GlobalUsings.g.cs"
-            || (name.StartsWith(".NETCoreApp,Version=v", StringComparison.Ordinal) && name.EndsWith(".AssemblyAttributes.cs", StringComparison.Ordinal));
-        if (!recognizedName) return false;
         var root = CSharpSyntaxTree.ParseText(File.ReadAllText(source)).GetCompilationUnitRoot();
-        if (!HasAutoGeneratedHeader(root)) return false;
-        return name.EndsWith("GlobalUsings.g.cs", StringComparison.Ordinal)
-            ? root.Members.Count == 0 && root.AttributeLists.Count == 0 && root.Usings.Count > 0
-            : root.Members.Count == 0 && root.AttributeLists.Count > 0
-                && root.AttributeLists.All(list => list.Target?.Identifier.IsKind(SyntaxKind.AssemblyKeyword) == true);
+        if (!HasAutoGeneratedHeader(root) || root.Members.Count > 0) return false;
+        var onlyAssemblyAttributes = root.AttributeLists.Count > 0
+            && root.AttributeLists.All(list => list.Target?.Identifier.IsKind(SyntaxKind.AssemblyKeyword) == true);
+        var onlyGlobalUsings = root.AttributeLists.Count == 0 && root.Usings.Count > 0
+            && root.Usings.All(directive => directive.GlobalKeyword.IsKind(SyntaxKind.GlobalKeyword));
+        return onlyAssemblyAttributes || onlyGlobalUsings;
     }
 
     // What Roslyn and SonarAnalyzer treat as generated code, so such files are never analyzed

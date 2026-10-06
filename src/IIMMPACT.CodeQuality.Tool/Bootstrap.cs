@@ -21,7 +21,7 @@ internal static class Bootstrap
             var label = $"{compilation.Key.Project} ({compilation.Key.TargetFramework})";
             var inputs = compilation.Sources
                 .Where(source => source != compilation.SentinelPath)
-                .Where(source => !ScanCollector.IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath))
+                .Where(source => !ScanCollector.IsSdkGenerated(source, compilation.SentinelPath) && !compilation.IsTrustedFile(source))
                 .Concat(compilation.Configs)
                 .Concat(compilation.AdditionalFiles)
                 .Append(compilation.ProjectPath)
@@ -98,7 +98,7 @@ internal static class Bootstrap
                         .ToHashSet(StringComparer.Ordinal);
                     var actual = compilation.Sources
                         .Where(source => source != compilation.SentinelPath)
-                        .Where(source => !ScanCollector.IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath))
+                        .Where(source => !ScanCollector.IsSdkGenerated(source, compilation.SentinelPath) && !compilation.IsTrustedFile(source))
                         .Where(source => IsUnderRepo(repoRoot, source))
                         .Select(source => QualityGate.RelativePath(repoRoot, source))
                         .ToHashSet(StringComparer.Ordinal);
@@ -165,14 +165,21 @@ internal static class Bootstrap
             && !actualPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)) return false;
         try
         {
+            // Removes the quality package references, then any ItemGroup they leave empty; formatting
+            // whitespace is ignored, everything else (elements, attributes, comments) must match.
             static string Normalize(string xml)
             {
-                var document = System.Xml.Linq.XDocument.Parse(xml, System.Xml.Linq.LoadOptions.PreserveWhitespace);
+                var document = System.Xml.Linq.XDocument.Parse(xml);
                 var wiring = document.Descendants().Where(element =>
                     element.Name.LocalName == "PackageReference"
                     && ((string?)element.Attribute("Include")) is "IIMMPACT.CodeQuality" or "IIMMPACT.CodeQuality.Tool")
                     .ToList();
-                foreach (var element in wiring) element.Remove();
+                foreach (var element in wiring)
+                {
+                    var group = element.Parent;
+                    element.Remove();
+                    if (group is { Name.LocalName: "ItemGroup" } && !group.Nodes().Any()) group.Remove();
+                }
                 return document.ToString(System.Xml.Linq.SaveOptions.DisableFormatting);
             }
             return Normalize(File.ReadAllText(actualPath)) == Normalize(committedText);

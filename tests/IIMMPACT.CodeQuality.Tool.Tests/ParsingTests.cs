@@ -115,6 +115,37 @@ public class ParsingTests
     }
 
     [Fact]
+    public void SarifParser_DropsSuppressorResults_ButKeepsPragmaSuppressionsAsViolations()
+    {
+        static string Result(int line, string type) => $$"""
+            {
+              "ruleId": "CS8618",
+              "level": "warning",
+              "message": { "text": "Non-nullable property must contain a non-null value." },
+              "suppressions": [{ "kind": "inSource", "properties": { "suppressionType": "{{type}}" } }],
+              "locations": [{
+                "physicalLocation": {
+                  "artifactLocation": { "uri": "file:///repo/Db.cs" },
+                  "region": { "startLine": {{line}}, "startColumn": 1 }
+                }
+              }]
+            }
+            """;
+        var sarif = $$"""
+            {
+              "version": "2.1.0",
+              "runs": [{ "results": [
+                {{Result(3, "DiagnosticSuppressor { Suppression Id: EFSPR1001, Suppression Justification: DbSet properties are populated. }")}},
+                {{Result(5, "Pragma Directive")}}
+              ] }]
+            }
+            """;
+        var diagnostic = Assert.Single(SarifLogParser.Parse(sarif, "/repo"));
+        Assert.Equal(5, diagnostic.Line);
+        Assert.True(diagnostic.SuppressedInSource);
+    }
+
+    [Fact]
     public void SarifParser_ReadsAnalyzerFailuresButDoesNotTreatDescriptorsAsExecution()
     {
         var sarif = """

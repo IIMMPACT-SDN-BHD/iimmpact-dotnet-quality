@@ -75,9 +75,14 @@ internal static class SarifLogParser
                     var (uri, line, column) = ReadRequiredLocation(result, rule);
                     var path = ToRelativePath(uri, solutionDir);
                     if (line <= 0 || column <= 0) throw new ScanException($"managed SARIF result {rule} has an invalid location");
-                    var suppressed = result.TryGetProperty("suppressions", out var suppressions)
-                        && suppressions.ValueKind == JsonValueKind.Array
-                        && suppressions.EnumerateArray().Any(s => s.TryGetProperty("kind", out var kind) && kind.GetString() == "inSource");
+                    var suppressionTypes = result.TryGetProperty("suppressions", out var suppressions) && suppressions.ValueKind == JsonValueKind.Array
+                        ? suppressions.EnumerateArray().Where(IsInSource).Select(SuppressionType).ToList()
+                        : [];
+                    // A DiagnosticSuppressor (for example EF Core's for DbSet properties) runs from the
+                    // SDK or a restored package, like any analyzer, so the compiler does not report the
+                    // diagnostic. Hand-written #pragma and [SuppressMessage] suppressions stay violations.
+                    if (suppressionTypes.Count > 0 && suppressionTypes.All(type => type.StartsWith("DiagnosticSuppressor", StringComparison.Ordinal))) continue;
+                    var suppressed = suppressionTypes.Count > 0;
                     diagnostics.Add(new Diagnostic(rule, path, line, column, message, ManagedRules.ParseMetric(rule, message), suppressed));
                 }
             }
@@ -89,6 +94,15 @@ internal static class SarifLogParser
             throw new ScanException($"malformed SARIF: {exception.Message}");
         }
     }
+
+    private static bool IsInSource(JsonElement suppression) =>
+        suppression.TryGetProperty("kind", out var kind) && kind.GetString() == "inSource";
+
+    private static string SuppressionType(JsonElement suppression) =>
+        suppression.TryGetProperty("properties", out var properties)
+        && properties.TryGetProperty("suppressionType", out var type) && type.ValueKind == JsonValueKind.String
+            ? type.GetString()!
+            : string.Empty;
 
     private static string ReadMessage(JsonElement result, string rule)
     {

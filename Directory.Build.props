@@ -2,7 +2,7 @@
 
   <!-- Package metadata shared by IIMMPACT.CodeQuality and IIMMPACT.CodeQuality.Tool. -->
   <PropertyGroup>
-    <Version>0.2.0</Version>
+    <Version>0.2.1</Version>
     <Authors>IIMMPACT SDN BHD</Authors>
     <Company>IIMMPACT SDN BHD</Company>
     <Copyright>Copyright (c) IIMMPACT SDN BHD 2026</Copyright>
