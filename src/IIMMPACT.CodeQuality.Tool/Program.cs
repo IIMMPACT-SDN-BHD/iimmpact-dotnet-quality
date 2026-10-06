@@ -1,95 +1,120 @@
-using System.Text.Json;
-
+// Lets the compiler command-line parser accept legacy <CodePage> settings such as 1252.
+System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
 return await QualityGate.RunAsync(args);
 
 /// <summary>
-/// Entry points for `iimmpact-quality check` and `iimmpact-quality baseline`.
-/// Both collect diagnostics from SARIF logs, then check compares them against
-/// code-quality-baseline.json while baseline rewrites it.
+/// Entry points for `iimmpact-quality check`, `baseline` and `bootstrap`.
+/// All three build a validated scan of every compilation, then compare against the
+/// schema-2 baseline committed at a trusted Git revision.
 /// </summary>
 internal static class QualityGate
 {
     private const string BaselineFileName = "code-quality-baseline.json";
-    private const string SarifDirectoryName = "iimmpact-quality";
 
     public static async Task<int> RunAsync(string[] args)
     {
-        if (args.Length != 2 || (args[0] is not ("check" or "baseline")))
+        var parsed = ParseArgs(args);
+        if (parsed is null)
         {
-            Console.Error.WriteLine("usage: iimmpact-quality check|baseline <solution.sln|solution.slnx>");
+            Console.Error.WriteLine(
+                "usage:\n" +
+                "  iimmpact-quality check <solution.sln|slnx> --base <revision>\n" +
+                "  iimmpact-quality baseline <solution.sln|slnx> --base <revision>\n" +
+                "  iimmpact-quality bootstrap <solution.sln|slnx> --source <revision>");
             return 2;
         }
+        var (command, solutionArg, _, revision) = parsed.Value;
 
-        var solutionPath = Path.GetFullPath(args[1]);
+        var solutionPath = Path.GetFullPath(solutionArg);
         if (!File.Exists(solutionPath))
         {
             Console.Error.WriteLine($"solution not found: {solutionPath}");
             return 2;
         }
+        var solutionDir = RealPath(Path.GetDirectoryName(solutionPath)!);
 
-        var solutionDir = Path.GetDirectoryName(solutionPath)!;
-
-        var projects = await ListProjectsAsync(solutionPath);
-        if (projects.Count == 0)
+        try
         {
-            Console.Error.WriteLine("no projects found in solution");
+            var repoRoot = RealPath(await Git.RepositoryRootAsync(solutionDir));
+            var commit = await Git.ResolveCommitAsync(repoRoot, revision);
+            var projects = await ListProjectsAsync(solutionPath);
+            if (projects.Count == 0)
+            {
+                Console.Error.WriteLine("no projects found in solution");
+                return 2;
+            }
+
+            return command switch
+            {
+                "bootstrap" => await RunBootstrapAsync(solutionPath, solutionDir, projects, repoRoot, commit),
+                "baseline" => await RunBaselineAsync(solutionPath, solutionDir, projects, repoRoot, commit),
+                _ => await RunCheckAsync(solutionPath, solutionDir, projects, repoRoot, commit),
+            };
+        }
+        catch (ScanException exception)
+        {
+            Console.Error.WriteLine(exception.Message);
             return 2;
         }
-
-        var diagnostics = await CollectDiagnosticsAsync(solutionPath, solutionDir, projects);
-        if (diagnostics is null)
+        catch (BaselineFormatException exception)
         {
+            Console.Error.WriteLine($"invalid baseline: {exception.Message}");
             return 2;
         }
-
-        var weakened = FindWeakenedRules(solutionDir);
-        var baselinePath = Path.Combine(solutionDir, BaselineFileName);
-
-        if (args[0] == "baseline")
+        catch (GateFailureException exception)
         {
-            var state = BaselineState.FromDiagnostics(diagnostics);
-            File.WriteAllText(baselinePath, state.ToJson());
-            Console.WriteLine($"wrote {BaselineFileName}: {state.FileCount} file(s), {state.TotalCount} diagnostic(s)");
-            return 0;
-        }
-
-        var failures = new List<string>();
-
-        if (!File.Exists(baselinePath))
-        {
-            Console.Error.WriteLine(
-                $"baseline not found: {baselinePath}\n" +
-                "run `iimmpact-quality baseline <solution>` once to record existing debt");
+            Console.Error.WriteLine(exception.Message);
             return 1;
         }
-
-        var baseline = BaselineState.Parse(File.ReadAllText(baselinePath));
-        failures.AddRange(baseline.Compare(BaselineState.FromDiagnostics(diagnostics), diagnostics));
-
-        foreach (var w in weakened)
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Xml.XmlException or ArgumentException)
         {
-            failures.Add(w);
+            Console.Error.WriteLine($"invalid input or analysis evidence: {exception.Message}");
+            return 2;
         }
+    }
 
-        if (failures.Count == 0)
+    private static (string Command, string Solution, string OptionName, string Revision)? ParseArgs(string[] args)
+    {
+        if (args.Length != 4 || args[0] is not ("check" or "baseline" or "bootstrap") || string.IsNullOrWhiteSpace(args[1]))
         {
-            Console.WriteLine($"PASS: {diagnostics.Count} diagnostic(s) within baseline");
-            return 0;
+            return null;
         }
+        var option = args[0] == "bootstrap" ? "--source" : "--base";
+        if (args[2] != option)
+        {
+            return null;
+        }
+        return (args[0], args[1], option, args[3]);
+    }
 
-        foreach (var failure in failures)
+    /// <summary>
+    /// Resolves every symlink component so the repo root and evidence paths share
+    /// one canonical prefix; without it Path.GetRelativePath produces "../" paths
+    /// for files that are really inside the repository (e.g. /var vs /private/var).
+    /// </summary>
+    internal static string RealPath(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var root = Path.GetPathRoot(full)!;
+        var current = root;
+        foreach (var segment in full[root.Length..].Split(Path.DirectorySeparatorChar))
         {
-            Console.WriteLine(failure);
+            current = Path.Combine(current, segment);
+            var info = new FileInfo(current);
+            while (info.LinkTarget is { } target)
+            {
+                current = Path.GetFullPath(target, Path.GetDirectoryName(current)!);
+                info = new FileInfo(current);
+            }
         }
-        Console.WriteLine($"FAIL: {failures.Count} group(s) over baseline");
-        return 1;
+        return current;
     }
 
     /// <summary>dotnet sln list output: relative .csproj paths, one per line.</summary>
     private static async Task<List<string>> ListProjectsAsync(string solutionPath)
     {
-        var (exit, output) = await RunProcessAsync(
-            "dotnet", $"sln \"{solutionPath}\" list", Path.GetDirectoryName(solutionPath)!);
+        var (exit, output) = await ScanCollector.RunProcessAsync(
+            "dotnet", ["sln", solutionPath, "list"], Path.GetDirectoryName(solutionPath)!);
         if (exit != 0)
         {
             Console.Error.WriteLine(output);
@@ -106,149 +131,172 @@ internal static class QualityGate
     }
 
     /// <summary>
-    /// Deletes obj/iimmpact-quality under each project, rebuilds the solution with
-    /// SARIF logging on, and parses the managed diagnostics from every log.
-    /// Returns null when the build fails or a project produced no log.
+    /// check: compare the candidate scan against the baseline committed at --base.
+    /// Exit 1 on gate failure, 2 on invalid input/build/analysis.
     /// </summary>
-    private static async Task<List<Diagnostic>?> CollectDiagnosticsAsync(
-        string solutionPath, string solutionDir, List<string> projects)
+    private static async Task<int> RunCheckAsync(
+        string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
     {
-        foreach (var project in projects)
-        {
-            var dir = Path.Combine(Path.GetDirectoryName(project)!, "obj", SarifDirectoryName);
-            if (Directory.Exists(dir))
-            {
-                Directory.Delete(dir, recursive: true);
-            }
-        }
+        var baseline = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
+        var candidate = CandidateBaseline(solutionDir);
+        var failures = candidate.ValidateReductionOf(baseline);
+        using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
 
-        var (exit, output) = await RunProcessAsync(
-            "dotnet",
-            $"build \"{solutionPath}\" --no-incremental -nologo -p:IimmpactQualitySarif=true",
-            solutionDir);
-        Console.Write(output);
-        if (exit != 0)
-        {
-            Console.Error.WriteLine($"dotnet build failed with exit code {exit}");
-            return null;
-        }
+        failures.AddRange(ScanCollector.CompareGeneratedExclusions(scan, candidate.GeneratedExclusions));
+        failures.AddRange(candidate.Compare(scan.Violations));
 
-        var diagnostics = new List<Diagnostic>();
-        foreach (var project in projects)
+        if (failures.Count == 0)
         {
-            var dir = Path.Combine(Path.GetDirectoryName(project)!, "obj", SarifDirectoryName);
-            var logs = Directory.Exists(dir)
-                ? Directory.GetFiles(dir, "*.sarif")
-                : [];
-            if (logs.Length == 0)
-            {
-                Console.Error.WriteLine(
-                    $"{Path.GetFileNameWithoutExtension(project)} produced no diagnostics log; " +
-                    "reference IIMMPACT.CodeQuality");
-                return null;
-            }
-            foreach (var log in logs)
-            {
-                diagnostics.AddRange(SarifLogParser.Parse(File.ReadAllText(log), solutionDir));
-            }
+            Console.WriteLine(
+                $"PASS: {scan.Violations.Count} managed diagnostic(s) within trusted baseline {commit[..12]}");
+            return 0;
         }
-
-        // Multi-TFM projects emit the same diagnostic once per framework log.
-        return diagnostics.Distinct().ToList();
+        foreach (var failure in failures)
+        {
+            Console.WriteLine(failure);
+        }
+        Console.WriteLine($"FAIL: {failures.Count} violation(s) over baseline {commit[..12]}");
+        return 1;
     }
 
     /// <summary>
-    /// Finds repo config that silences a managed rule: dotnet_diagnostic.&lt;id&gt;.severity
-    /// set to none/silent/suggestion in *.editorconfig or *.globalconfig, or a managed
-    /// rule listed in &lt;NoWarn&gt; inside *.props/*.targets/*.csproj. Skips bin/obj.
+    /// baseline: rewrite the checked-in baseline with reductions only. Never raises a
+    /// ceiling, never adds an allowance, never invents exclusions.
     /// </summary>
-    public static List<string> FindWeakenedRules(string solutionDir)
+    private static async Task<int> RunBaselineAsync(
+        string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
     {
-        var findings = new List<string>();
-        var files = Directory
-            .EnumerateFiles(solutionDir, "*", SearchOption.AllDirectories)
-            .Where(f => !IsUnderBinOrObj(f))
-            .Where(f =>
-            {
-                var name = Path.GetFileName(f);
-                return name.EndsWith(".editorconfig", StringComparison.OrdinalIgnoreCase)
-                    || name.EndsWith(".globalconfig", StringComparison.OrdinalIgnoreCase)
-                    || name.EndsWith(".props", StringComparison.OrdinalIgnoreCase)
-                    || name.EndsWith(".targets", StringComparison.OrdinalIgnoreCase)
-                    || name.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
-            });
-
-        foreach (var file in files.OrderBy(f => f, StringComparer.Ordinal))
+        var baseline = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
+        var candidate = CandidateBaseline(solutionDir);
+        var candidateFailures = candidate.ValidateReductionOf(baseline);
+        if (candidateFailures.Count > 0)
         {
-            var relative = RelativePath(solutionDir, file);
-            var lineNumber = 0;
-            foreach (var rawLine in File.ReadLines(file))
+            foreach (var failure in candidateFailures) Console.Error.WriteLine(failure);
+            Console.Error.WriteLine("baseline refused: candidate baseline is not a reduction of the trusted baseline");
+            return 1;
+        }
+        using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
+
+        var failures = new List<string>();
+        failures.AddRange(ScanCollector.CompareGeneratedExclusions(scan, candidate.GeneratedExclusions));
+        if (failures.Count > 0)
+        {
+            foreach (var failure in failures)
             {
-                lineNumber++;
-                var line = rawLine.Trim();
-                foreach (var rule in ManagedRules.Ids)
+                Console.Error.WriteLine(failure);
+            }
+            Console.Error.WriteLine("baseline refused: the scan itself violates the policy");
+            return 2;
+        }
+
+        var reduced = candidate.Reduce(scan.Violations, out var stillOver);
+        if (stillOver.Count > 0)
+        {
+            foreach (var violation in stillOver)
+            {
+                var site = violation.PhysicalSite;
+                var location = $"{site.Path}({site.Line},{site.Column})";
+                Console.Error.WriteLine(
+                    $"{location}: error {violation.Rule}: {violation.Message} " +
+                    $"[{violation.Entity.Declaration}: still over approved ceiling]");
+            }
+            Console.Error.WriteLine("baseline refused: reductions only; violations above the baseline remain");
+            return 1;
+        }
+        if (reduced.ToJson() == candidate.ToJson())
+        {
+            Console.WriteLine($"baseline already matches scan at {commit[..12]}; nothing to reduce");
+            return 0;
+        }
+
+        var baselinePath = Path.Combine(solutionDir, BaselineFileName);
+        File.WriteAllText(baselinePath, reduced.ToJson());
+        Console.WriteLine(
+            $"wrote {BaselineFileName}: reduced from {candidate.Allowances.Count} to " +
+            $"{reduced.Allowances.Count} allowance(s)");
+        return 0;
+    }
+
+    /// <summary>
+    /// bootstrap: propose a baseline for the source revision. Only produces a file —
+    /// nothing approves it. Handwritten compilation inputs must match the source
+    /// revision exactly; generated files are recorded separately.
+    /// </summary>
+    private static async Task<int> RunBootstrapAsync(
+        string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
+    {
+        var baselinePath = Path.Combine(solutionDir, BaselineFileName);
+        if (File.Exists(baselinePath))
+        {
+            Console.Error.WriteLine($"bootstrap refused: {BaselineFileName} already exists; bootstrap is proposal-only and never overwrites it");
+            return 1;
+        }
+        using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
+
+        // Every handwritten compile input must match the approved source commit.
+        var mismatches = await Bootstrap.ValidateSourcesAsync(repoRoot, commit, scan, solutionDir);
+        if (mismatches.Count > 0)
+        {
+            foreach (var mismatch in mismatches)
+            {
+                Console.Error.WriteLine(mismatch);
+            }
+            Console.Error.WriteLine(
+                "bootstrap refused: compilation inputs differ from the approved source revision");
+            return 1;
+        }
+
+        // One allowance per (entity, rule): a declaration that repeats a banned call
+        // produces several diagnostics, which merge into a single frozen allowance
+        // whose sites list every call. Metric rules collapse to the worst measured value.
+        var allowances = scan.Violations
+            .GroupBy(v => (v.Entity, v.Rule))
+            .Select(group =>
+            {
+                var ceiling = group.Max(v => v.Metric);
+                if (ceiling is { } metric)
                 {
-                    if (IsConfigFile(file) && SeverityWeakens(line, rule))
-                    {
-                        findings.Add($"{relative}({lineNumber}): error: {rule} is silenced by repo config; remove the override");
-                    }
-                    else if (IsMsbuildFile(file) && NoWarnLists(line, rule))
-                    {
-                        findings.Add($"{relative}({lineNumber}): error: {rule} is suppressed in NoWarn; remove the suppression");
-                    }
+                    return (Allowance)new MetricAllowance(group.Key.Entity, group.Key.Rule, metric);
                 }
-            }
-        }
-        return findings;
+                var sites = group
+                    .SelectMany(v => v.TokenSites)
+                    .OrderBy(s => s.Token)
+                    .ThenBy(s => s.Offset)
+                    .ToArray();
+                return new FrozenScopeAllowance(
+                    group.Key.Entity, group.Key.Rule,
+                    group.Select(v => v.TokenDigest).Single(),
+                    sites);
+            });
+        var baseline = Baseline.FromAllowances(allowances, scan.ObservedGeneratedFiles);
+        File.WriteAllText(baselinePath, baseline.ToJson());
+        Console.WriteLine(
+            $"wrote {BaselineFileName}: {baseline.Allowances.Count} allowance(s) proposed " +
+            $"from {commit[..12]}; review and merge before trusting");
+        return 0;
     }
 
-    private static bool IsConfigFile(string path) =>
-        path.EndsWith(".editorconfig", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".globalconfig", StringComparison.OrdinalIgnoreCase);
-
-    private static bool IsMsbuildFile(string path) =>
-        path.EndsWith(".props", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".targets", StringComparison.OrdinalIgnoreCase)
-        || path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
-
-    private static bool SeverityWeakens(string line, string rule)
+    /// <summary>Reads the baseline committed at the trusted revision, or fails.</summary>
+    private static async Task<Baseline> TrustedBaselineAsync(
+        string repoRoot, string commit, string solutionDir)
     {
-        if (!line.StartsWith($"dotnet_diagnostic.{rule}.severity", StringComparison.OrdinalIgnoreCase))
+        var repoRelative = Path.GetRelativePath(repoRoot, Path.Combine(solutionDir, BaselineFileName));
+        var json = await Git.ReadFileAsync(repoRoot, commit, repoRelative);
+        if (json is null)
         {
-            return false;
+            throw new GateFailureException(
+                $"baseline not found at {commit[..12]}:{repoRelative}\n" +
+                "commit a schema-2 baseline produced by `iimmpact-quality bootstrap` first");
         }
-        var value = line[(line.IndexOf('=') + 1)..].Trim();
-        return value is "none" or "silent" or "suggestion";
+        return Baseline.Parse(json);
     }
 
-    private static bool NoWarnLists(string line, string rule)
+    private static Baseline CandidateBaseline(string solutionDir)
     {
-        var tagStart = line.IndexOf("<NoWarn", StringComparison.OrdinalIgnoreCase);
-        if (tagStart < 0)
-        {
-            return false;
-        }
-        var closeStart = line.IndexOf('>', tagStart);
-        var closeEnd = line.IndexOf("</NoWarn>", StringComparison.OrdinalIgnoreCase);
-        if (closeStart < 0 || closeEnd < 0)
-        {
-            return false;
-        }
-        var value = line[(closeStart + 1)..closeEnd];
-        return value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Any(v => v.Equals(rule, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool IsUnderBinOrObj(string path)
-    {
-        foreach (var segment in path.Split(Path.DirectorySeparatorChar))
-        {
-            if (segment is "bin" or "obj")
-            {
-                return true;
-            }
-        }
-        return false;
+        var path = Path.Combine(solutionDir, BaselineFileName);
+        if (!File.Exists(path))
+            throw new BaselineFormatException($"candidate baseline not found: {path}");
+        return Baseline.Parse(File.ReadAllText(path));
     }
 
     /// <summary>Solution-relative path with forward slashes for stable baselines.</summary>
@@ -257,36 +305,9 @@ internal static class QualityGate
         var relative = Path.GetRelativePath(solutionDir, path);
         return relative.Replace(Path.DirectorySeparatorChar, '/');
     }
-
-    private static async Task<(int Exit, string Output)> RunProcessAsync(
-        string fileName, string arguments, string workingDirectory)
-    {
-        var process = new System.Diagnostics.Process
-        {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = fileName,
-                Arguments = arguments,
-                WorkingDirectory = workingDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-            },
-        };
-        process.Start();
-        var stdout = process.StandardOutput.ReadToEndAsync();
-        var stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        var output = await stdout + await stderr;
-        return (process.ExitCode, output);
-    }
 }
 
-/// <summary>One compiler diagnostic that belongs to a managed rule.</summary>
-internal sealed record Diagnostic(
-    string RuleId,
-    string Path,
-    int Line,
-    int Column,
-    string Message,
-    long? Metric);
+internal sealed class GateFailureException : Exception
+{
+    public GateFailureException(string message) : base(message) { }
+}

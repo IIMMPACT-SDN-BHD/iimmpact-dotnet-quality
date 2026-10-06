@@ -7,13 +7,39 @@ dotnet_diagnostic.S134.severity = warning
 dotnet_diagnostic.S138.severity = warning
 dotnet_diagnostic.S104.severity = warning
 
+dotnet_diagnostic.S3776.severity = warning
+
 # Async correctness
 dotnet_diagnostic.S4462.severity = warning
 dotnet_diagnostic.CA1849.severity = warning
 dotnet_diagnostic.CA2016.severity = warning
+dotnet_diagnostic.CA2008.severity = warning
+dotnet_diagnostic.CA2012.severity = warning
 
-# Logging
+# Logging and formatting
 dotnet_diagnostic.CA2254.severity = warning
+dotnet_diagnostic.CA2017.severity = warning
+dotnet_diagnostic.CA2241.severity = warning
+
+# Runtime correctness
+dotnet_diagnostic.CA2000.severity = warning
+dotnet_diagnostic.CA2013.severity = warning
+dotnet_diagnostic.CA2019.severity = warning
+dotnet_diagnostic.CA2022.severity = warning
+dotnet_diagnostic.CA2200.severity = warning
+dotnet_diagnostic.CA2208.severity = warning
+dotnet_diagnostic.CA2214.severity = warning
+
+# Nullable correctness (requires <Nullable>enable</Nullable>)
+dotnet_diagnostic.CS8600.severity = warning
+dotnet_diagnostic.CS8601.severity = warning
+dotnet_diagnostic.CS8602.severity = warning
+dotnet_diagnostic.CS8603.severity = warning
+dotnet_diagnostic.CS8604.severity = warning
+dotnet_diagnostic.CS8618.severity = warning
+dotnet_diagnostic.CS8619.severity = warning
+dotnet_diagnostic.CS8625.severity = warning
+dotnet_diagnostic.CS8629.severity = warning
 
 # Banned APIs
 dotnet_diagnostic.RS0030.severity = warning
