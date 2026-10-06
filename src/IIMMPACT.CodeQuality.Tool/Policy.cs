@@ -44,7 +44,7 @@ internal static class Policy
                     failures.Add($"{label}: {rule} is suppressed by the actual csc command line");
             }
             if (!compilation.GeneratedSources.Contains(source))
-                failures.AddRange(ForbiddenDirectives(source, compilation.CommandLine.ParseOptions)
+                failures.AddRange(ForbiddenDirectives(ScanCollector.ParseSource(source, compilation.CommandLine))
                     .Select(found => $"{QualityGate.RelativePath(solutionDir, source)}({found.Line},1): error: {found.Reason}"));
             failures.AddRange(WeakenedAnalyzerOptions(EffectiveOptions(compilation, source))
                 .Select(reason => $"{label}: {QualityGate.RelativePath(solutionDir, source)}: {reason}"));
@@ -58,10 +58,8 @@ internal static class Policy
 
     // In handwritten source, `#nullable disable` turns nullable rules off, and `#line` moves or
     // hides diagnostics so they land on an approved declaration or disappear.
-    private static IEnumerable<(int Line, string Reason)> ForbiddenDirectives(string source, Microsoft.CodeAnalysis.CSharp.CSharpParseOptions options) =>
-        Microsoft.CodeAnalysis.CSharp.CSharpSyntaxTree.ParseText(File.ReadAllText(source), options)
-            .GetRoot()
-            .DescendantTrivia(descendIntoTrivia: true)
+    private static IEnumerable<(int Line, string Reason)> ForbiddenDirectives(SyntaxNode root) =>
+        root.DescendantTrivia(descendIntoTrivia: true)
             .Select(trivia => trivia.GetStructure())
             .Select(directive => directive switch
             {
@@ -84,10 +82,19 @@ internal static class Policy
             .ToImmutableDictionary(StringComparer.OrdinalIgnoreCase);
 
     // dotnet_code_quality options (excluded symbols, API surface, dispose analysis kind, ...)
-    // narrow what managed rules report, so only the package's own values are allowed.
+    // narrow what rules report. Options for a managed rule, and generic options that apply to
+    // every rule, must keep the package's values; options for unmanaged rules are the consumer's.
+    private static bool AffectsManagedRules(string key)
+    {
+        if (!key.StartsWith("dotnet_code_quality", StringComparison.OrdinalIgnoreCase)) return false;
+        var parts = key.Split('.');
+        var ruleScoped = parts.Length == 3 && System.Text.RegularExpressions.Regex.IsMatch(parts[1], "^[A-Za-z]+[0-9]+$");
+        return !ruleScoped || ManagedRules.Ids.Contains(parts[1].ToUpperInvariant());
+    }
+
     private static IEnumerable<string> WeakenedAnalyzerOptions(ImmutableDictionary<string, string> effective)
     {
-        foreach (var (key, value) in effective.Where(option => option.Key.StartsWith("dotnet_code_quality", StringComparison.OrdinalIgnoreCase)))
+        foreach (var (key, value) in effective.Where(option => AffectsManagedRules(option.Key)))
         {
             if (!ShippedCodeQualityOptions.TryGetValue(key, out var shipped) || !shipped.Equals(value, StringComparison.OrdinalIgnoreCase))
                 yield return $"analyzer option '{key} = {value}' is not allowed; only the IIMMPACT.CodeQuality value applies";

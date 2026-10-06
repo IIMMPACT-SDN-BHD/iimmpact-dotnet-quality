@@ -205,7 +205,7 @@ public class DeclarationIndexTests : IDisposable
     }
 
     [Fact]
-    public void SameNamedLocalFunctionsInSiblingBlocks_GetOrderedIdentities()
+    public void SameNamedLocalFunctionsInSiblingBlocks_ShareOneIdentity()
     {
         var index = Index("""
             public class Probe
@@ -218,7 +218,7 @@ public class DeclarationIndexTests : IDisposable
             }
             """);
         Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method Run(bool)/local Local()", index.OwnerOf(line: 5, column: 35));
-        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method Run(bool)/local Local()#2", index.OwnerOf(line: 6, column: 30));
+        Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/method Run(bool)/local Local()", index.OwnerOf(line: 6, column: 30));
     }
 
     [Fact]
@@ -246,5 +246,26 @@ public class DeclarationIndexTests : IDisposable
             }
             """);
         Assert.Equal("P.csproj@net8.0|Source.cs|global/class Probe/field _value", index.OwnerOf(line: 3, column: 36));
+    }
+
+    [Fact]
+    public void SharedIdentityDigest_ChangesWhenAnyPartChanges()
+    {
+        const string identity = "global/class Probe/method Run(bool)/local Local()";
+        static string Source(int second) => $$"""
+            public class Probe
+            {
+                public int Run(bool flag)
+                {
+                    if (flag) { int Local() => 1; return Local(); }
+                    else { int Local() => {{second}}; return Local(); }
+                }
+            }
+            """;
+        var before = Index(Source(2)).TokenDigestOf(identity);
+        var unchanged = Index(Source(2)).TokenDigestOf(identity);
+        var edited = Index(Source(3)).TokenDigestOf(identity);
+        Assert.Equal(before, unchanged);
+        Assert.NotEqual(before, edited);
     }
 }

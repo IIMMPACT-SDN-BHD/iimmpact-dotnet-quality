@@ -76,12 +76,12 @@ internal static class ScanCollector
         string solutionPath, string solutionDir, List<string> solutionProjects)
     {
         await RequireSupportedSdkAsync(solutionDir);
-        var plans = await EvaluateClosureAsync(solutionProjects, solutionDir);
+        var (plans, consumerBeforeProps) = await EvaluateClosureAsync(solutionProjects, solutionDir);
         if (!plans.Any(plan => plan.IsCSharp)) throw new ScanException("no C# compilations were declared");
 
         var invocationDir = Path.Combine(Path.GetTempPath(), $"iimmpact-quality-{Guid.NewGuid():N}");
         Directory.CreateDirectory(invocationDir);
-        var artifactNames = WriteArtifactNamesProps(invocationDir, solutionDir);
+        var artifactNames = WriteArtifactNamesProps(invocationDir, solutionDir, consumerBeforeProps);
         try
         {
             var compilations = new List<CompilationScan>();
@@ -140,13 +140,17 @@ internal static class ScanCollector
     // other, so name the folder after a hash of the solution-relative path. The SDK fixes this
     // name before package props load. CustomBeforeDirectoryBuildProps is imported earlier, is not
     // used by the SDK (unlike CustomAfterDirectoryBuildProps), and as a global property it also
-    // applies when referenced projects are evaluated.
-    private static string WriteArtifactNamesProps(string invocationDir, string solutionDir)
+    // applies when referenced projects are evaluated. A consumer's own value is imported first.
+    private static string WriteArtifactNamesProps(string invocationDir, string solutionDir, string? consumerBeforeProps)
     {
         var path = Path.Combine(invocationDir, "artifact-names.props");
         var root = System.Security.SecurityElement.Escape(solutionDir);
+        var consumerImport = consumerBeforeProps is null
+            ? string.Empty
+            : $"<Import Project=\"{System.Security.SecurityElement.Escape(consumerBeforeProps)}\" />";
         File.WriteAllText(path, $$"""
             <Project>
+              {{consumerImport}}
               <PropertyGroup>
                 <_IimmpactRelativeProject>$([System.IO.Path]::GetRelativePath('{{root}}', '$(MSBuildProjectFullPath)'))</_IimmpactRelativeProject>
                 <ArtifactsProjectName>$(MSBuildProjectName)-$([MSBuild]::StableStringHash('$(_IimmpactRelativeProject)'))</ArtifactsProjectName>
@@ -161,10 +165,11 @@ internal static class ScanCollector
         public bool IsCSharp => ProjectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static async Task<List<CompilationPlan>> EvaluateClosureAsync(
+    private static async Task<(List<CompilationPlan> Plans, string? ConsumerBeforeProps)> EvaluateClosureAsync(
         List<string> solutionProjects, string solutionDir)
     {
         var plans = new Dictionary<(string Path, string Tfm), CompilationPlan>();
+        var consumerBeforeProps = new HashSet<string>(StringComparer.Ordinal);
         var dependencies = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var projects = new Queue<string>(solutionProjects.Select(Path.GetFullPath));
         var discovered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -172,7 +177,8 @@ internal static class ScanCollector
         {
             var project = QualityGate.RealPath(projects.Dequeue());
             if (!discovered.Add(project)) continue;
-            var frameworks = await DeclaredFrameworksAsync(project);
+            var (frameworks, beforeProps) = await DeclaredFrameworksAsync(project);
+            if (!string.IsNullOrWhiteSpace(beforeProps)) consumerBeforeProps.Add(beforeProps);
             dependencies.TryAdd(project, new HashSet<string>(StringComparer.OrdinalIgnoreCase));
             if (frameworks.Count == 0) throw new ScanException($"project declares no target framework: {project}");
             foreach (var tfm in frameworks)
@@ -203,21 +209,27 @@ internal static class ScanCollector
             projectOrder.Add(project);
         }
         foreach (var project in solutionProjects.Select(Path.GetFullPath)) Visit(QualityGate.RealPath(project));
-        return projectOrder.SelectMany(project => plans.Values
+        // CustomBeforeDirectoryBuildProps can only come from a global source (command line,
+        // environment, Directory.Build.rsp), so every project sees the same value.
+        if (consumerBeforeProps.Count > 1)
+            throw new ScanException($"projects disagree on CustomBeforeDirectoryBuildProps: {string.Join(", ", consumerBeforeProps)}");
+        var ordered = projectOrder.SelectMany(project => plans.Values
                 .Where(plan => plan.ProjectPath.Equals(project, StringComparison.OrdinalIgnoreCase))
                 .OrderBy(plan => plan.TargetFramework, StringComparer.Ordinal))
             .ToList();
+        return (ordered, consumerBeforeProps.SingleOrDefault());
     }
 
-    private static async Task<List<string>> DeclaredFrameworksAsync(string project)
+    private static async Task<(List<string> Frameworks, string? CustomBeforeDirectoryBuildProps)> DeclaredFrameworksAsync(string project)
     {
         using var root = await EvaluateAsync(project,
-            ["-getProperty:TargetFramework", "-getProperty:TargetFrameworks"]);
+            ["-getProperty:TargetFramework", "-getProperty:TargetFrameworks", "-getProperty:CustomBeforeDirectoryBuildProps"]);
         var properties = root.RootElement.GetProperty("Properties");
         var multi = properties.GetProperty("TargetFrameworks").GetString();
         var single = properties.GetProperty("TargetFramework").GetString();
         var value = string.IsNullOrWhiteSpace(multi) ? single : multi;
-        return value?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+        var frameworks = value?.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Distinct(StringComparer.OrdinalIgnoreCase).ToList() ?? [];
+        return (frameworks, properties.GetProperty("CustomBeforeDirectoryBuildProps").GetString());
     }
 
     private static async Task<List<string>> ProjectReferencesAsync(string project, string tfm)
@@ -311,23 +323,49 @@ internal static class ScanCollector
         if (!Real(evidence.Analyzers, baseDir).SetEquals(Real(args.AnalyzerReferences.Select(a => a.FilePath), baseDir))) throw new ScanException($"{label}: analyzer evidence does not match parsed csc inputs");
     }
 
-    // Analyzers and source generators must come from the SDK or a NuGet package, whose identity
-    // and version are reviewed in project files. A locally built or copied analyzer could emit
-    // or suppress code that the gate never sees.
+    // Analyzers and source generators must come from the SDK or from a package that restore
+    // resolved for this project (project.assets.json), in any configured package folder. Package
+    // identities and versions are reviewed in project files; a locally built or copied DLL is not.
     private static void ValidateAnalyzerOrigins(string label, Evidence evidence)
     {
-        var roots = new[] { evidence.SdkRoot, evidence.NuGetRoot }
-            .Select(root => QualityGate.RealPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar)
-            .ToArray();
+        static string Directory(string path) => QualityGate.RealPath(path).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+        var allowed = new List<string> { Directory(evidence.SdkRoot) };
+        try
+        {
+            using var assets = JsonDocument.Parse(File.ReadAllText(evidence.AssetsFile));
+            var folders = assets.RootElement.GetProperty("packageFolders").EnumerateObject().Select(folder => folder.Name).ToList();
+            var packages = assets.RootElement.GetProperty("libraries").EnumerateObject()
+                .Where(library => library.Value.GetProperty("type").GetString() == "package")
+                .Select(library => library.Value.GetProperty("path").GetString()!)
+                .ToList();
+            // Targeting packs (for example Microsoft.NETCore.App.Ref) are restored as download
+            // dependencies with an exact range such as "[8.0.25, 8.0.25]".
+            if (assets.RootElement.GetProperty("project").TryGetProperty("frameworks", out var frameworks))
+            {
+                packages.AddRange(frameworks.EnumerateObject()
+                    .Where(framework => framework.Value.TryGetProperty("downloadDependencies", out _))
+                    .SelectMany(framework => framework.Value.GetProperty("downloadDependencies").EnumerateArray())
+                    .Select(dependency => Path.Combine(
+                        dependency.GetProperty("name").GetString()!.ToLowerInvariant(),
+                        dependency.GetProperty("version").GetString()!.Trim('[', ']').Split(',')[0].Trim().ToLowerInvariant())));
+            }
+            allowed.AddRange(packages
+                .SelectMany(relative => folders.Select(folder => Path.Combine(folder, relative)))
+                .Where(System.IO.Directory.Exists).Select(Directory));
+        }
+        catch (Exception exception) when (exception is IOException or JsonException or KeyNotFoundException or InvalidOperationException)
+        {
+            throw new ScanException($"{label}: cannot read restore assets {evidence.AssetsFile}: {exception.Message}");
+        }
         var foreign = evidence.Analyzers.Select(QualityGate.RealPath)
-            .Where(path => !roots.Any(root => path.StartsWith(root, StringComparison.Ordinal)))
+            .Where(path => !allowed.Any(root => path.StartsWith(root, StringComparison.Ordinal)))
             .ToList();
         if (foreign.Count > 0)
-            throw new ScanException($"{label}: analyzers must come from the .NET SDK or a NuGet package; not supported: {string.Join(", ", foreign)}");
+            throw new ScanException($"{label}: analyzers must come from the .NET SDK or a restored NuGet package; not supported: {string.Join(", ", foreign)}");
     }
 
     private sealed record Evidence(
-        string Project, string TargetFramework, bool SkippedAnalyzers, string SdkRoot, string NuGetRoot,
+        string Project, string TargetFramework, bool SkippedAnalyzers, string SdkRoot, string AssetsFile,
         List<string> Analyzers, List<string> Configs, List<string> AdditionalFiles,
         List<string> Sources, List<string> CscArgs);
 
@@ -336,7 +374,7 @@ internal static class ScanCollector
         string? project = null;
         string? tfm = null;
         string? sdkRoot = null;
-        string? nugetRoot = null;
+        string? assetsFile = null;
         var skipped = false;
         var sections = new Dictionary<string, List<string>>(StringComparer.Ordinal)
         {
@@ -348,7 +386,7 @@ internal static class ScanCollector
             if (line.StartsWith("project=", StringComparison.Ordinal)) { project = line[8..]; continue; }
             if (line.StartsWith("tfm=", StringComparison.Ordinal)) { tfm = line[4..]; continue; }
             if (line.StartsWith("sdk-root=", StringComparison.Ordinal)) { sdkRoot = line[9..]; continue; }
-            if (line.StartsWith("nuget-root=", StringComparison.Ordinal)) { nugetRoot = line[11..]; continue; }
+            if (line.StartsWith("assets=", StringComparison.Ordinal)) { assetsFile = line[7..]; continue; }
             if (line.StartsWith("skipped-analyzers=", StringComparison.Ordinal))
             {
                 if (!bool.TryParse(line[18..], out skipped) && line[18..].Length > 0) throw new ScanException("invalid skipped-analyzers evidence");
@@ -360,9 +398,9 @@ internal static class ScanCollector
             if (line.Length > 0) sections[section].Add(line);
         }
         if (string.IsNullOrWhiteSpace(project) || string.IsNullOrWhiteSpace(tfm) || sections["csc-args"].Count == 0
-            || string.IsNullOrWhiteSpace(sdkRoot) || string.IsNullOrWhiteSpace(nugetRoot))
+            || string.IsNullOrWhiteSpace(sdkRoot) || string.IsNullOrWhiteSpace(assetsFile))
             throw new ScanException("incomplete compiler evidence");
-        return new(project, tfm, skipped, sdkRoot, nugetRoot, sections["analyzers"], sections["configs"], sections["additional-files"], sections["sources"], sections["csc-args"]);
+        return new(project, tfm, skipped, sdkRoot, assetsFile, sections["analyzers"], sections["configs"], sections["additional-files"], sections["sources"], sections["csc-args"]);
     }
 
     private static List<ScanViolation> Attribute(List<CompilationScan> compilations, string solutionDir)
@@ -414,8 +452,8 @@ internal static class ScanCollector
         foreach (var compilation in compilations)
         {
             var sources = compilation.Sources.Where(s => s != compilation.SentinelPath)
-                .ToDictionary(s => s, s => CSharpSyntaxTree.ParseText(File.ReadAllText(s), compilation.CommandLine.ParseOptions).GetCompilationUnitRoot());
-            var attributeNames = GeneratedAttributeNames(sources.Values);
+                .ToDictionary(s => s, s => ParseSource(s, compilation.CommandLine));
+            var globalAliases = GeneratedAttributeAliases(sources.Values, global: true);
             foreach (var (source, root) in sources)
             {
                 if (IsSdkGenerated(source, compilation.ProjectPath, compilation.SentinelPath))
@@ -424,6 +462,9 @@ internal static class ScanCollector
                     continue;
                 }
                 var options = Policy.EffectiveOptions(compilation, source);
+                var attributeNames = new HashSet<string>(GeneratedAttributes, StringComparer.Ordinal);
+                attributeNames.UnionWith(globalAliases);
+                attributeNames.UnionWith(GeneratedAttributeAliases([root], global: false));
                 var marked = IsAnalyzerRecognizedGenerated(source, root, attributeNames)
                     || (options.TryGetValue("generated_code", out var generated) && generated.Equals("true", StringComparison.OrdinalIgnoreCase));
                 if (!marked) continue;
@@ -434,6 +475,14 @@ internal static class ScanCollector
             }
         }
         return candidates;
+    }
+
+    /// <summary>Parses a compile input exactly as csc does: its parse options and source encoding.</summary>
+    internal static CompilationUnitSyntax ParseSource(string path, CSharpCommandLineArguments commandLine)
+    {
+        using var stream = File.OpenRead(path);
+        var text = Microsoft.CodeAnalysis.Text.SourceText.From(stream, commandLine.Encoding);
+        return CSharpSyntaxTree.ParseText(text, commandLine.ParseOptions, path).GetCompilationUnitRoot();
     }
 
     internal static bool IsSdkGenerated(string source, string projectPath, string sentinelPath)
@@ -458,14 +507,15 @@ internal static class ScanCollector
     private static readonly string[] GeneratedAttributes =
         ["CompilerGenerated", "CompilerGeneratedAttribute", "GeneratedCode", "GeneratedCodeAttribute"];
 
-    // The generated-code attribute names in this compilation, including `using X = ...` aliases
-    // (local or global) that point at them. ValueText strips `@` escapes.
-    private static HashSet<string> GeneratedAttributeNames(IEnumerable<CompilationUnitSyntax> roots)
+    // `using X = ...GeneratedCodeAttribute` aliases. A `global using` alias applies to every file
+    // in the compilation; a plain one only to its own file. ValueText strips `@` escapes.
+    private static HashSet<string> GeneratedAttributeAliases(IEnumerable<CompilationUnitSyntax> roots, bool global)
     {
-        var names = new HashSet<string>(GeneratedAttributes, StringComparer.Ordinal);
+        var names = new HashSet<string>(StringComparer.Ordinal);
         foreach (var alias in roots.SelectMany(root => root.DescendantNodes().OfType<UsingDirectiveSyntax>()))
         {
-            if (alias.Alias is not null && alias.NamespaceOrType is { } target && names.Contains(LastIdentifier(target)))
+            if (alias.GlobalKeyword.IsKind(SyntaxKind.GlobalKeyword) != global) continue;
+            if (alias.Alias is not null && alias.NamespaceOrType is { } target && GeneratedAttributes.Contains(LastIdentifier(target)))
             {
                 names.Add(alias.Alias.Name.Identifier.ValueText);
                 names.Add(alias.Alias.Name.Identifier.ValueText + "Attribute");

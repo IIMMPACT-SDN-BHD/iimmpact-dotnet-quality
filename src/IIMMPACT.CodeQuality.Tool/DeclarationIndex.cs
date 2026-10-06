@@ -10,7 +10,9 @@ internal sealed record EntityKey(CompilationKey Compilation, string Source, stri
 internal sealed class DeclarationIndex
 {
     private const string FileDeclaration = "file";
-    // Partial declarations of one type or method share an identity and own several spans.
+    // Declarations with the same name in one file (partial parts, or same-named local functions
+    // in sibling blocks) share one identity that owns all their spans. Its digest covers every
+    // part, so an allowance cannot move between them; editing any part requires a clean scope.
     private readonly Dictionary<string, List<TextSpan>> _byIdentity;
     private readonly List<(TextSpan Span, string Identity)> _bySpan;
     private readonly SyntaxNode _root;
@@ -26,17 +28,8 @@ internal sealed class DeclarationIndex
         _bySpan = [];
         foreach (var node in _root.DescendantNodes())
         {
-            if (DeclarationNamer.TryName(node) is not { } name) continue;
-            var identity = name;
-            if (_byIdentity.TryGetValue(name, out var spans) && !IsPartial(node))
-            {
-                // Same-named declarations in separate scopes, such as local functions in sibling
-                // blocks, are distinguished by their order in the file.
-                var ordinal = 2;
-                while (_byIdentity.ContainsKey($"{name}#{ordinal}")) ordinal++;
-                identity = $"{name}#{ordinal}";
-            }
-            if (!_byIdentity.TryGetValue(identity, out spans)) _byIdentity[identity] = spans = [];
+            if (DeclarationNamer.TryName(node) is not { } identity) continue;
+            if (!_byIdentity.TryGetValue(identity, out var spans)) _byIdentity[identity] = spans = [];
             spans.Add(node.Span);
             _bySpan.Add((node.Span, identity));
         }
@@ -97,9 +90,6 @@ internal sealed class DeclarationIndex
         throw new ScanException($"declaration '{declaration}' is not present in the syntax index");
     }
 
-    private static bool IsPartial(SyntaxNode node) =>
-        node is MemberDeclarationSyntax member && member.Modifiers.Any(SyntaxKind.PartialKeyword);
-
     private static void WriteField(Stream stream, string value)
     {
         var bytes = Encoding.UTF8.GetBytes(value);
@@ -112,7 +102,7 @@ internal sealed class DeclarationIndex
         CSharpParseOptions? parseOptions = null, Encoding? encoding = null)
     {
         using var stream = File.OpenRead(filePath);
-        var text = SourceText.From(stream, encoding ?? Encoding.UTF8);
+        var text = SourceText.From(stream, encoding);
         var tree = CSharpSyntaxTree.ParseText(text, parseOptions ?? CSharpParseOptions.Default, filePath);
         if (tree.GetDiagnostics().Any(d => d.Severity == DiagnosticSeverity.Error))
             throw new ScanException($"cannot parse compile input {relativeSource} with its compiler parse options");

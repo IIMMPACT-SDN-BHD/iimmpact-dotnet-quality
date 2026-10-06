@@ -47,7 +47,7 @@
       <_IimmpactScanEvidence Include="tfm=$(TargetFramework)" />
       <_IimmpactScanEvidence Include="skipped-analyzers=$(_SkipAnalyzers)" />
       <_IimmpactScanEvidence Include="sdk-root=$(NetCoreRoot)" />
-      <_IimmpactScanEvidence Include="nuget-root=$(NuGetPackageRoot)" />
+      <_IimmpactScanEvidence Include="assets=$(ProjectAssetsFile)" />
       <_IimmpactScanEvidence Include="analyzers:" />
       <_IimmpactScanEvidence Include="$(_IimmpactAnalyzers)" />
       <_IimmpactScanEvidence Include="configs:" />

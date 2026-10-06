@@ -35,13 +35,13 @@ internal static class Git
     }
 
     /// <summary>
-    /// A file's bytes as `git checkout` would write them (eol and filter conversion applied),
-    /// so a clean CRLF checkout matches its commit. Null when the file is absent.
+    /// A file's committed blob bytes, with no checkout filters applied (the repository can
+    /// configure filters, so they cannot vouch for content). Null when the file is absent.
     /// </summary>
-    public static async Task<byte[]?> CheckoutBytesAsync(string repoDir, string commit, string repoRelativePath)
+    public static async Task<byte[]?> CommittedBytesAsync(string repoDir, string commit, string repoRelativePath)
     {
         var (exit, output) = await ScanCollector.RunProcessBytesAsync(
-            "git", ["cat-file", "--filters", $"{commit}:{ToGitPath(repoRelativePath)}"], repoDir);
+            "git", ["show", $"{commit}:{ToGitPath(repoRelativePath)}"], repoDir);
         return exit == 0 ? output : null;
     }
 

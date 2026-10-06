@@ -45,14 +45,14 @@ internal static class Bootstrap
                 {
                     continue;
                 }
-                var committedBytes = await Git.CheckoutBytesAsync(repoRoot, commit, relative);
+                var committedBytes = await Git.CommittedBytesAsync(repoRoot, commit, relative);
                 if (committedBytes is null)
                 {
                     failures.Add($"{label}: {relative} is not committed at {commit[..12]}");
                     continue;
                 }
                 var actualBytes = await File.ReadAllBytesAsync(fullPath);
-                if (!committedBytes.AsSpan().SequenceEqual(actualBytes))
+                if (!SameIgnoringLineEndings(committedBytes, actualBytes))
                 {
                     var committedText = System.Text.Encoding.UTF8.GetString(committedBytes);
                     if (!OnlyTemporaryQualityWiringDiffers(fullPath, committedText))
@@ -122,6 +122,21 @@ internal static class Bootstrap
             catch (UnauthorizedAccessException) { }
         }
         return failures;
+    }
+
+    // A clean checkout may convert LF to CRLF (core.autocrlf, eol=crlf); nothing else may differ.
+    private static bool SameIgnoringLineEndings(byte[] committed, byte[] actual) =>
+        committed.AsSpan().SequenceEqual(actual) || WithoutCarriageReturns(committed).SequenceEqual(WithoutCarriageReturns(actual));
+
+    private static byte[] WithoutCarriageReturns(byte[] bytes)
+    {
+        var result = new List<byte>(bytes.Length);
+        for (var index = 0; index < bytes.Length; index++)
+        {
+            if (bytes[index] == (byte)'\r' && index + 1 < bytes.Length && bytes[index + 1] == (byte)'\n') continue;
+            result.Add(bytes[index]);
+        }
+        return [.. result];
     }
 
     private static bool IsUnderRepo(string repoRoot, string fullPath)
