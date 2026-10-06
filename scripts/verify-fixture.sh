@@ -715,6 +715,30 @@ assert_contains "$WORK/check-fsharp.log" "PASS" "F# reference is built and skipp
 rm -rf Consumer/FSharpLib Consumer/UsesFSharp.cs
 git checkout -- Consumer/Consumer.csproj
 
+log "build-written obj files pass only when they hold nothing but assembly attributes"
+for kind in attributes code; do
+  if [ "$kind" = attributes ]; then body='[assembly: System.Reflection.AssemblyMetadata("probe", "1")]'; else body='public class ObjProbe { public System.DateTime Now() => System.DateTime.Now; }'; fi
+  # Escape for an MSBuild item attribute: quotes for XML, ';' so it is not a list separator.
+  body="$(printf '%s' "$body" | sed -e 's/;/%3B/g' -e 's/"/\&quot;/g')"
+  cat > Consumer/Directory.Build.targets <<EOF
+<Project>
+  <Target Name="WriteObjProbe" BeforeTargets="CoreCompile">
+    <WriteLinesToFile File="\$(IntermediateOutputPath)ObjProbe.cs" Lines="// &lt;auto-generated/&gt;;$body" Overwrite="true" />
+    <ItemGroup><Compile Include="\$(IntermediateOutputPath)ObjProbe.cs" /></ItemGroup>
+  </Target>
+</Project>
+EOF
+  if [ "$kind" = attributes ]; then
+    dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE" > "$WORK/check-obj-attributes.log" 2>&1 \
+      || { echo "FAIL: assembly-attribute obj file" >&2; cat "$WORK/check-obj-attributes.log" >&2; exit 1; }
+    assert_contains "$WORK/check-obj-attributes.log" "PASS" "assembly-attribute obj file is treated as SDK output"
+  else
+    expect_fail 2 "obj file with code" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
+    assert_contains "$LAST_LOG" "generated compile input is outside the solution repository" "obj file with code is rejected"
+  fi
+done
+rm Consumer/Directory.Build.targets
+
 log "an older NetAnalyzers package cannot drop newer rules"
 sed -i.bak 's|</Project>|  <ItemGroup><PackageReference Include="Microsoft.CodeAnalysis.NetAnalyzers" Version="8.0.0" PrivateAssets="all" /></ItemGroup>\n</Project>|' Consumer/Consumer.csproj && rm Consumer/Consumer.csproj.bak
 expect_fail 2 "old NetAnalyzers" dotnet iimmpact-quality check "$SLN" --base "$CLEAN_BASE"
