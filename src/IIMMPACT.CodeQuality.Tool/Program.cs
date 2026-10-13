@@ -48,17 +48,19 @@ internal static class QualityGate
             {
                 "bootstrap" => await RunBootstrapAsync(solutionPath, solutionDir, projects, repoRoot, commit),
                 "baseline" => await RunBaselineAsync(solutionPath, solutionDir, projects, repoRoot, commit),
-                _ => await RunCheckAsync(solutionPath, solutionDir, projects, repoRoot, commit),
+                _ => await RunCheckAsync(solutionArg, solutionPath, solutionDir, projects, repoRoot, commit),
             };
         }
         catch (ScanException exception)
         {
             Console.Error.WriteLine(exception.Message);
+            Console.Error.WriteLine(FailureGuidance.ToolProblem);
             return 2;
         }
         catch (BaselineFormatException exception)
         {
             Console.Error.WriteLine($"invalid baseline: {exception.Message}");
+            Console.Error.WriteLine(FailureGuidance.ToolProblem);
             return 2;
         }
         catch (GateFailureException exception)
@@ -69,6 +71,7 @@ internal static class QualityGate
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Xml.XmlException or ArgumentException)
         {
             Console.Error.WriteLine($"invalid input or analysis evidence: {exception.Message}");
+            Console.Error.WriteLine(FailureGuidance.ToolProblem);
             return 2;
         }
     }
@@ -135,7 +138,7 @@ internal static class QualityGate
     /// Exit 1 on gate failure, 2 on invalid input/build/analysis.
     /// </summary>
     private static async Task<int> RunCheckAsync(
-        string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
+        string solutionArg, string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
     {
         var baseline = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
         var candidate = CandidateBaseline(solutionDir);
@@ -147,15 +150,15 @@ internal static class QualityGate
 
         if (failures.Count == 0)
         {
-            Console.WriteLine(
-                $"PASS: {scan.Violations.Count} managed diagnostic(s) within trusted baseline {commit[..12]}");
+            Console.WriteLine(CheckReport.PassMessage(scan.Violations.Count, commit));
+            CheckReport.AppendStepSummary(CheckReport.PassMarkdown(scan.Violations.Count, commit));
             return 0;
         }
-        foreach (var failure in failures)
+        foreach (var line in CheckReport.RenderFailure(failures, solutionArg, commit))
         {
-            Console.WriteLine(failure);
+            Console.WriteLine(line);
         }
-        Console.WriteLine($"FAIL: {failures.Count} violation(s) over baseline {commit[..12]}");
+        CheckReport.AppendStepSummary(CheckReport.FailureMarkdown(failures, solutionArg, commit));
         return 1;
     }
 
@@ -171,19 +174,18 @@ internal static class QualityGate
         var candidateFailures = candidate.ValidateReductionOf(baseline);
         if (candidateFailures.Count > 0)
         {
-            foreach (var failure in candidateFailures) Console.Error.WriteLine(failure);
+            foreach (var failure in candidateFailures) Console.Error.WriteLine(failure.Line);
             Console.Error.WriteLine("baseline refused: candidate baseline is not a reduction of the trusted baseline");
             return 1;
         }
         using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
 
-        var failures = new List<string>();
-        failures.AddRange(ScanCollector.CompareGeneratedExclusions(scan, candidate.GeneratedExclusions));
+        var failures = ScanCollector.CompareGeneratedExclusions(scan, candidate.GeneratedExclusions);
         if (failures.Count > 0)
         {
             foreach (var failure in failures)
             {
-                Console.Error.WriteLine(failure);
+                Console.Error.WriteLine(failure.Line);
             }
             Console.Error.WriteLine("baseline refused: the scan itself violates the policy");
             return 2;

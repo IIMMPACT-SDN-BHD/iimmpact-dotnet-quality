@@ -30,7 +30,8 @@ public class StrictBoundaryTests
 
         var failure = Assert.Single(inflated.ValidateReductionOf(trusted));
 
-        Assert.Contains("not a reduction", failure);
+        Assert.Equal(FailureKind.BaselineNotReduced, failure.Kind);
+        Assert.Contains("not a reduction", failure.Line);
     }
 
     private static string BaselineJson(long ceiling) => $$"""
