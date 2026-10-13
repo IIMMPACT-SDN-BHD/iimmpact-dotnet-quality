@@ -176,23 +176,31 @@ internal sealed class Baseline
                 .ToList(),
             new SortedDictionary<string, string>(generatedExclusions.ToDictionary(kv => kv.Key, kv => kv.Value), StringComparer.Ordinal));
 
-    public List<string> ValidateReductionOf(Baseline trusted)
+    public List<GateFailure> ValidateReductionOf(Baseline trusted)
     {
-        var failures = new List<string>();
+        var failures = new List<GateFailure>();
         var trustedAllowances = trusted.Allowances.ToDictionary(a => (a.Entity, a.Rule));
         foreach (var candidate in Allowances)
         {
             if (!trustedAllowances.TryGetValue((candidate.Entity, candidate.Rule), out var approved)
                 || !IsReduction(candidate, approved))
             {
-                failures.Add($"candidate allowance {candidate.Entity.Source} {candidate.Entity.Declaration} {candidate.Rule} is not a reduction of the trusted baseline");
+                failures.Add(new GateFailure(
+                    FailureKind.BaselineNotReduced,
+                    $"candidate allowance {candidate.Entity.Source} {candidate.Entity.Declaration} {candidate.Rule} is not a reduction of the trusted baseline",
+                    candidate.Entity.Source, candidate.Rule, candidate.Entity.Declaration,
+                    "allowance is not a reduction of the trusted baseline"));
             }
         }
         foreach (var (path, digest) in GeneratedExclusions)
         {
             if (!trusted.GeneratedExclusions.TryGetValue(path, out var approved) || approved != digest)
             {
-                failures.Add($"candidate generated exclusion '{path}' is not a reduction of the trusted baseline");
+                failures.Add(new GateFailure(
+                    FailureKind.BaselineNotReduced,
+                    $"candidate generated exclusion '{path}' is not a reduction of the trusted baseline",
+                    path, string.Empty, string.Empty,
+                    "generated exclusion is not a reduction of the trusted baseline"));
             }
         }
         return failures;
@@ -206,25 +214,28 @@ internal sealed class Baseline
         _ => false,
     };
 
-    public List<string> Compare(IReadOnlyList<ScanViolation> violations)
+    public List<GateFailure> Compare(IReadOnlyList<ScanViolation> violations)
     {
-        var failures = new List<string>();
+        var failures = new List<GateFailure>();
         var lookup = _allowances.ToDictionary(a => (a.Entity, a.Rule));
         foreach (var violation in violations)
         {
             if (!lookup.TryGetValue((violation.Entity, violation.Rule), out var allowance))
             {
-                failures.Add(FormatViolation(violation, "no baseline allowance"));
+                failures.Add(GateFailure.ForViolation(FailureKind.NewDiagnostic, violation, "no baseline allowance"));
             }
             else if (!Covers(allowance, violation))
             {
-                failures.Add(FormatViolation(violation, allowance switch
+                failures.Add(allowance switch
                 {
                     MetricAllowance metric when violation.Metric is { } actual =>
-                        $"metric {actual} exceeds approved ceiling {metric.Ceiling}",
-                    MetricAllowance => "no measured value for a metric rule",
-                    _ => "declaration body or diagnostic sites differ from the approved scope",
-                }));
+                        GateFailure.ForViolation(FailureKind.MetricAboveCeiling, violation,
+                            $"metric {actual} exceeds approved ceiling {metric.Ceiling}"),
+                    MetricAllowance => GateFailure.ForViolation(
+                        FailureKind.MetricUnmeasured, violation, "no measured value for a metric rule"),
+                    _ => GateFailure.ForViolation(
+                        FailureKind.FrozenScopeChanged, violation, "declaration body or diagnostic sites differ from the approved scope"),
+                });
             }
         }
         return failures;
@@ -240,9 +251,6 @@ internal sealed class Baseline
     };
 
     private static string SiteKey(TokenSite site) => $"{site.Token:D10}\0{site.Offset:D10}";
-
-    private static string FormatViolation(ScanViolation violation, string reason) =>
-        $"{violation.PhysicalSite.Path}({violation.PhysicalSite.Line},{violation.PhysicalSite.Column}): error {violation.Rule}: {violation.Message} [{violation.Entity.Declaration}: {reason}]";
 
     public Baseline Reduce(IReadOnlyList<ScanViolation> currentViolations, out List<ScanViolation> uncovered)
     {

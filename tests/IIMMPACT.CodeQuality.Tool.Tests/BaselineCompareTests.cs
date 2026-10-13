@@ -5,7 +5,7 @@ namespace IIMMPACT.CodeQuality.Tool.Tests;
 /// <summary>
 /// Schema-2 baseline comparison is the gate's core behavior: an allowance must cover
 /// the candidate violation or the check fails. Each test builds literal scan inputs
-/// and baseline JSON and asserts the observable failure strings.
+/// and baseline JSON and asserts the failure kind and the reported line.
 /// </summary>
 public class BaselineCompareTests
 {
@@ -58,8 +58,10 @@ public class BaselineCompareTests
             """);
         var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 61));
         var failure = Assert.Single(baseline.Compare(scan));
-        Assert.Contains("src/Foo.cs(10,5): error S138", failure);
-        Assert.Contains("no baseline allowance", failure);
+        Assert.Equal(FailureKind.NewDiagnostic, failure.Kind);
+        Assert.Equal(
+            "src/Foo.cs(10,5): error S138: message S138 [class Foo.method int Run(int): no baseline allowance]",
+            failure.Line);
     }
 
     [Fact]
@@ -80,7 +82,8 @@ public class BaselineCompareTests
             """);
         var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 71));
         var failure = Assert.Single(baseline.Compare(scan));
-        Assert.Contains("metric 71 exceeds approved ceiling 61", failure);
+        Assert.Equal(FailureKind.MetricAboveCeiling, failure.Kind);
+        Assert.Contains("metric 71 exceeds approved ceiling 61", failure.Line);
     }
 
     [Fact]
@@ -102,7 +105,8 @@ public class BaselineCompareTests
             """);
         var scan = Scan(Frozen("S134", "class Foo.method int Run(int)", "different"));
         var failure = Assert.Single(baseline.Compare(scan));
-        Assert.Contains("differ from the approved scope", failure);
+        Assert.Equal(FailureKind.FrozenScopeChanged, failure.Kind);
+        Assert.Contains("differ from the approved scope", failure.Line);
     }
 
     [Fact]
@@ -123,7 +127,7 @@ public class BaselineCompareTests
             }
             """);
         var scan = Scan(Metric("S138", "class Foo.method int Run(int)", 61, source: "src/Other.cs"));
-        Assert.Single(baseline.Compare(scan));
+        Assert.Equal(FailureKind.NewDiagnostic, Assert.Single(baseline.Compare(scan)).Kind);
     }
 
     [Fact]
@@ -147,7 +151,8 @@ public class BaselineCompareTests
             Entity("class Foo.method int Run(int)"), "S134", "nesting", null,
             new DiagnosticSite("src/Foo.cs", 2, 9), [new TokenSite(2, 0)], new string('a', 64));
         var failure = Assert.Single(baseline.Compare(Scan(violation)));
-        Assert.Contains("differ from the approved scope", failure);
+        Assert.Equal(FailureKind.FrozenScopeChanged, failure.Kind);
+        Assert.Contains("differ from the approved scope", failure.Line);
     }
 
     [Fact]
@@ -200,7 +205,7 @@ public class BaselineCompareTests
         var violation = new ScanViolation(
             Entity("class Foo.method int Run(int)"), "RS0030", "banned", null,
             new DiagnosticSite("src/Foo.cs", 9, 9), [new TokenSite(9, 0)], new string('a', 64));
-        Assert.Single(baseline.Compare(Scan(violation)));
+        Assert.Equal(FailureKind.FrozenScopeChanged, Assert.Single(baseline.Compare(Scan(violation))).Kind);
     }
 
     [Fact]
@@ -223,7 +228,8 @@ public class BaselineCompareTests
             Entity("class Foo.method int Run(int)"), "S138", "message", null,
             new DiagnosticSite("src/Foo.cs", 10, 5), [], string.Empty);
         var failure = Assert.Single(baseline.Compare(Scan(violation)));
-        Assert.Contains("no measured value for a metric rule", failure);
+        Assert.Equal(FailureKind.MetricUnmeasured, failure.Kind);
+        Assert.Contains("no measured value for a metric rule", failure.Line);
     }
 
     [Fact]

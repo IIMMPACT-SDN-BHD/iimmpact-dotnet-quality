@@ -34,6 +34,7 @@ export NUGET_PACKAGES="$WORK/nuget-packages"
 export NUGET_HTTP_CACHE_PATH="$WORK/nuget-http-cache"
 export NUGET_PLUGINS_CACHE_PATH="$WORK/nuget-plugins-cache"
 export DOTNET_CLI_HOME="$WORK/dotnet-home"
+unset GITHUB_STEP_SUMMARY  # only the probe that asserts the step summary sets it
 mkdir -p "$FEED" "$CONSUMER" "$NUGET_PACKAGES" "$NUGET_HTTP_CACHE_PATH" "$DOTNET_CLI_HOME"
 printf 'work dir: %s\n' "$WORK"
 
@@ -343,6 +344,7 @@ PY
 git add "$BASELINE" && git commit -m "aggregate schema" >/dev/null
 AGG_REV=$(git rev-parse HEAD)
 expect_fail 2 "aggregate baseline" dotnet iimmpact-quality check "$SLN" --base "$AGG_REV"
+assert_contains "$LAST_LOG" "build, configuration or tool problem" "invalid baseline exit 2 explains it is not a code finding"
 assert_contains "$LAST_LOG" "invalid baseline" "aggregate schema is rejected"
 git reset --hard "$BASE_REV" >/dev/null
 
@@ -401,6 +403,53 @@ expect_fail 1 "edited frozen scope" dotnet iimmpact-quality check "$SLN" --base 
 assert_contains "$LAST_LOG" "NestingDepth5" "edited scope is attributed"
 assert_contains "$LAST_LOG" "S134" "edited scope reports S134"
 git checkout -- Consumer/NestingDepth5.cs
+
+log "mixed causes are grouped, hinted and summarised"
+python3 - <<'PY'
+path = "Consumer/Method61Lines.cs"
+with open(path) as f:
+    lines = f.readlines()
+idx = next(i for i, l in enumerate(lines) if "x += 60;" in l)
+lines[idx:idx] = [f"        x += {60 + i};\n" for i in range(1, 11)]
+with open(path, "w") as f:
+    f.writelines(lines)
+path = "Consumer/NestingDepth5.cs"
+with open(path) as f:
+    text = f.read()
+with open(path, "w") as f:
+    f.write(text.replace("r += j;", "r += j + 1;"))
+PY
+{
+  echo "public static class Method61LinesMixed"
+  echo "{"
+  echo "    public static int Run(int x) {"
+  for i in $(seq 1 60); do
+    echo "        x += $i;"
+  done
+  echo "        return x;"
+  echo "    }"
+  echo "}"
+} > Consumer/Method61LinesMixed.cs
+SUMMARY="$WORK/step-summary.md"
+rm -f "$SUMMARY"
+GITHUB_STEP_SUMMARY="$SUMMARY" expect_fail 1 "mixed causes" dotnet iimmpact-quality check "$SLN" --base "$BASE_REV"
+assert_contains "$LAST_LOG" "New diagnostics (" "new diagnostics group header"
+assert_contains "$LAST_LOG" "Metrics above approved ceiling (1): " "metric group header"
+assert_contains "$LAST_LOG" "Frozen scopes changed (" "frozen scope group header"
+assert_contains "$LAST_LOG" "Reproduce locally: dotnet iimmpact-quality check $SLN --base $BASE_REV" "reproduce command"
+assert_contains "$LAST_LOG" "error S138: " "per-line diagnostic format is unchanged"
+line_of() { grep -n "$1" "$LAST_LOG" | head -n 1 | cut -d: -f1; }
+[ "$(line_of 'New diagnostics (')" -lt "$(line_of 'Metrics above approved ceiling (')" ] \
+  && [ "$(line_of 'Metrics above approved ceiling (')" -lt "$(line_of 'Frozen scopes changed (')" ] \
+  || { echo "FAIL: groups are out of order" >&2; cat "$LAST_LOG" >&2; exit 1; }
+tail -n 1 "$LAST_LOG" | grep -Eq '^FAIL: [0-9]+ violation\(s\) over baseline [0-9a-f]{12}$' \
+  || { echo "FAIL: last line is not the stable FAIL line" >&2; cat "$LAST_LOG" >&2; exit 1; }
+assert_contains "$SUMMARY" "| Location | Rule | Declaration | Detail |" "step summary table"
+assert_contains "$SUMMARY" "### Metrics above approved ceiling (1)" "step summary group heading"
+assert_contains "$SUMMARY" "Method61LinesMixed" "step summary lists the new declaration"
+echo "-- grouped output --"; cat "$LAST_LOG"; echo "-- step summary --"; cat "$SUMMARY"
+git checkout -- Consumer/Method61Lines.cs Consumer/NestingDepth5.cs
+rm Consumer/Method61LinesMixed.cs
 
 log "a comment inside a frozen owner does not move its token anchor"
 python3 - <<'PY'
@@ -566,6 +615,7 @@ cat > Consumer/Consumer.csproj <<'EOF'
 </Project>
 EOF
 expect_fail 2 "malformed SARIF" dotnet iimmpact-quality check "$SLN" --base "$BASE_REV"
+assert_contains "$LAST_LOG" "build, configuration or tool problem" "scan failure exit 2 explains it is not a code finding"
 assert_contains "$LAST_LOG" "malformed SARIF" "malformed SARIF named"
 git checkout -- Consumer/Consumer.csproj
 

@@ -42,7 +42,7 @@ The package turns these rules on as warnings:
 Reference the package in every project you want checked:
 
 ```xml
-<PackageReference Include="IIMMPACT.CodeQuality" Version="0.2.1" PrivateAssets="all" />
+<PackageReference Include="IIMMPACT.CodeQuality" Version="0.2.2" PrivateAssets="all" />
 ```
 
 Install the tool once per repo:
@@ -67,6 +67,25 @@ Exit codes:
 - `0`: every managed diagnostic is within the trusted baseline.
 - `1`: gate failure. A violation has no allowance, a metric exceeds its ceiling, a frozen scope changed, the candidate baseline is not a reduction, or no baseline exists at `--base`.
 - `2`: invalid input or analysis. The build failed, analysis was incomplete or altered, or the baseline JSON is malformed.
+
+## Check output
+
+On failure, `check` prints one group per cause, in this order, each starting with a header `<Title> (<count>): <hint>` followed by its diagnostics:
+
+| Group | Cause | Fix |
+| --- | --- | --- |
+| Baseline not reduced | The working-tree `code-quality-baseline.json` adds or raises an allowance compared with the trusted base. | Revert those entries. |
+| New diagnostics | A managed diagnostic has no allowance. | Fix the code at each site. Never add allowances or suppressions. |
+| Metrics above approved ceiling | A file, type or method measures above its approved ceiling. | Split it along a coherent responsibility. Do not raise the ceiling. |
+| Metric rules without a measured value | A metric rule produced no measurement. | Tool problem: report it. |
+| Frozen scopes changed | A declaration with recorded debt changed. | Make the declaration clean. `baseline` then drops the unused allowances; `check` passes without it. |
+| Generated sources changed | A generated source was added or changed. | Ask the gate owner. A pull request cannot approve generated sources. |
+
+Each diagnostic line keeps the form `path(line,col): error RULE: message [declaration: reason]`, so GitHub problem matchers can annotate it. After the groups come `Reproduce locally: dotnet iimmpact-quality check <solution as given> --base <full commit>` and the last line, always `FAIL: N violation(s) over baseline <12-character sha>`. A pass prints a single `PASS:` line.
+
+When `GITHUB_STEP_SUMMARY` is set and not empty, `check` also appends Markdown to that file: a one-line pass, or per group a heading, the hint and a `Location | Rule | Declaration | Detail` table of at most 50 rows (`and N more, see the job log.` follows when truncated), then the reproduce command. A failure to write the file prints a warning to stderr and never changes the exit code. Nothing is written when the variable is unset.
+
+Every exit `2` message ends with a line saying the failure is a build, configuration or tool problem and not a code finding: fix the build error shown above, and if the build is clean, report the log to `IIMMPACT-SDN-BHD/iimmpact-dotnet-quality`.
 
 `check` fails with exit `2` when:
 
