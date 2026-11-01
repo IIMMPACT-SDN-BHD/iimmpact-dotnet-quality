@@ -9,6 +9,9 @@ internal sealed record FrozenScopeAllowance(
     EntityKey Entity, string Rule, string TokenDigest, TokenSite[] Sites)
     : Allowance(Entity, Rule);
 
+/// <summary>A project whose trusted allowances were applied to a different target framework.</summary>
+internal sealed record Retarget(string Project, string From, string To);
+
 internal sealed class Baseline
 {
     public const string SchemaName = "iimmpact-quality-baseline";
@@ -175,6 +178,42 @@ internal sealed class Baseline
                 .ThenBy(a => a.Rule, StringComparer.Ordinal)
                 .ToList(),
             new SortedDictionary<string, string>(generatedExclusions.ToDictionary(kv => kv.Key, kv => kv.Value), StringComparer.Ordinal));
+
+    /// <summary>
+    /// Re-keys this (trusted) baseline for a single-target framework change. A project is
+    /// mapped only when its allowances sit under exactly one TFM, the scan compiled it
+    /// under exactly one TFM, and the two differ. Multi-targeted projects, projects whose
+    /// allowances span several TFMs, and projects that add or remove a framework in a
+    /// multi-target set are left untouched. Allowance values are never modified, so the
+    /// mapped baseline stays exactly as strict as the trusted one.
+    /// </summary>
+    public Baseline RetargetedTo(IEnumerable<CompilationKey> scanned, out List<Retarget> retargets)
+    {
+        var scannedFrameworks = scanned
+            .GroupBy(key => key.Project, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(k => k.TargetFramework).Distinct(StringComparer.Ordinal).ToList());
+        var trustedFrameworks = _allowances
+            .GroupBy(a => a.Entity.Compilation.Project, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.Select(a => a.Entity.Compilation.TargetFramework).Distinct(StringComparer.Ordinal).ToList());
+
+        retargets = trustedFrameworks
+            .Where(t => t.Value.Count == 1
+                && scannedFrameworks.TryGetValue(t.Key, out var now) && now.Count == 1 && now[0] != t.Value[0])
+            .Select(t => new Retarget(t.Key, t.Value[0], scannedFrameworks[t.Key][0]))
+            .OrderBy(r => r.Project, StringComparer.Ordinal)
+            .ToList();
+        if (retargets.Count == 0)
+        {
+            return this;
+        }
+
+        var byProject = retargets.ToDictionary(r => r.Project, StringComparer.Ordinal);
+        var mapped = _allowances.Select(allowance =>
+            byProject.TryGetValue(allowance.Entity.Compilation.Project, out var retarget)
+                ? allowance with { Entity = allowance.Entity with { Compilation = allowance.Entity.Compilation with { TargetFramework = retarget.To } } }
+                : allowance);
+        return FromAllowances(mapped, _generatedExclusions);
+    }
 
     public List<GateFailure> ValidateReductionOf(Baseline trusted)
     {

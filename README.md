@@ -62,6 +62,8 @@ dotnet iimmpact-quality baseline MyApp.slnx --base main     # reductions only: s
 
 `check` compares the working-tree `code-quality-baseline.json` and a fresh scan against the baseline committed at `--base`. The working-tree file may only remove allowances, lower ceilings or drop exclusions, so a branch cannot approve its own debt.
 
+When a project's trusted allowances sit under exactly one target framework and the scan compiled it under exactly one different framework, the trusted allowances are applied to the new framework before any comparison, and `check` and `baseline` print `<project>: trusted baseline <old> applied to <new>` (also in the step summary). The working-tree baseline must then be re-keyed to the new framework with unchanged or lower values. Multi-targeted projects, projects with allowances under several frameworks, and added or removed frameworks in a multi-target set are never mapped.
+
 Exit codes:
 
 - `0`: every managed diagnostic is within the trusted baseline.

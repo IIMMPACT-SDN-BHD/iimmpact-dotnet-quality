@@ -16,6 +16,7 @@
 #  11. an analyzer-disabled build fails
 #  12. a fake generated exclusion fails
 #  13. an empty clean scan passes with real execution evidence
+#  14. a single-target framework change maps the trusted allowances; growth after it fails
 #
 # The consumer lives in a disposable git repository under agent-tmp so `check`
 # can read baselines from an approved commit, never from the working tree.
@@ -90,7 +91,8 @@ EOF
 
 cd "$CONSUMER"
 dotnet new sln -n Fixture --force >/dev/null
-dotnet new classlib -n Consumer -f net8.0 -o Consumer --force >/dev/null
+dotnet new classlib -n Consumer -o Consumer --force >/dev/null
+sed -i.bak 's|<TargetFramework>net[0-9.]*</TargetFramework>|<TargetFramework>net8.0</TargetFramework>|' Consumer/Consumer.csproj && rm Consumer/Consumer.csproj.bak
 rm -f Consumer/Class1.cs
 if [ -f Fixture.slnx ]; then SLN=Fixture.slnx; else SLN=Fixture.sln; fi
 dotnet sln "$SLN" add Consumer/Consumer.csproj >/dev/null
@@ -475,6 +477,59 @@ PY
 dotnet iimmpact-quality check "$SLN" --base "$BASE_REV" | tee "$WORK/check-comment.log"
 assert_contains "$WORK/check-comment.log" "PASS" "comment-only edit still passes"
 git checkout -- Consumer/NestingDepth5.cs
+
+# --- single-target framework change ------------------------------------------
+
+log "a single-target retarget keeps the trusted allowances"
+sed -i.bak 's|<TargetFramework>net8.0</TargetFramework>|<TargetFramework>net9.0</TargetFramework>|' Consumer/Consumer.csproj && rm Consumer/Consumer.csproj.bak
+grep -q '<TargetFramework>net9.0</TargetFramework>' Consumer/Consumer.csproj \
+  || { echo "FAIL: fixture project was not retargeted" >&2; exit 1; }
+expect_fail 1 "retarget with the old baseline keys" dotnet iimmpact-quality check "$SLN" --base "$BASE_REV"
+assert_contains "$LAST_LOG" "not a reduction" "a candidate still keyed to the old framework is not a reduction"
+sed -i.bak 's|"tfm": "net8.0"|"tfm": "net9.0"|' "$BASELINE" && rm "$BASELINE.bak"
+dotnet iimmpact-quality check "$SLN" --base "$BASE_REV" | tee "$WORK/check-retarget.log"
+assert_contains "$WORK/check-retarget.log" "Consumer/Consumer.csproj: trusted baseline net8.0 applied to net9.0" "retarget is reported"
+assert_contains "$WORK/check-retarget.log" "PASS" "re-keyed baseline passes after the retarget"
+
+log "growth after a retarget still fails"
+python3 - <<'PY2'
+path = "Consumer/Method61Lines.cs"
+with open(path) as f:
+    lines = f.readlines()
+idx = next(i for i, l in enumerate(lines) if "x += 60;" in l)
+lines[idx:idx] = [f"        x += {60 + i};\n" for i in range(1, 11)]
+with open(path, "w") as f:
+    f.writelines(lines)
+PY2
+expect_fail 1 "growth after retarget" dotnet iimmpact-quality check "$SLN" --base "$BASE_REV"
+assert_contains "$LAST_LOG" "exceeds approved ceiling" "growth after the retarget reports its ceiling"
+git checkout -- Consumer/Method61Lines.cs
+
+log "a raised ceiling after a retarget fails"
+cp "$BASELINE" "$WORK/retargeted-baseline.json"
+python3 - <<'PY2'
+import json
+path = "code-quality-baseline.json"
+with open(path) as f:
+    data = json.load(f)
+for a in data["allowances"]:
+    if a["rule"] == "S138" and a.get("kind") == "metric":
+        a["ceiling"] += 10
+with open(path, "w") as f:
+    json.dump(data, f, indent=2)
+PY2
+expect_fail 1 "raised ceiling after retarget" dotnet iimmpact-quality check "$SLN" --base "$BASE_REV"
+assert_contains "$LAST_LOG" "not a reduction" "a raised ceiling after the retarget is rejected"
+cp "$WORK/retargeted-baseline.json" "$BASELINE"
+
+log "baseline reduces a retargeted project"
+rm Consumer/Method61LinesB.cs
+dotnet iimmpact-quality baseline "$SLN" --base "$BASE_REV" | tee "$WORK/baseline-retarget.log"
+assert_contains "$WORK/baseline-retarget.log" "applied to net9.0" "baseline reports the retarget"
+assert_contains "$WORK/baseline-retarget.log" "reduced" "baseline reduces after the retarget"
+dotnet iimmpact-quality check "$SLN" --base "$BASE_REV" | tee "$WORK/check-retarget-shrink.log"
+assert_contains "$WORK/check-retarget-shrink.log" "PASS" "reduced baseline passes after the retarget"
+git reset --hard "$BASE_REV" >/dev/null
 
 # --- policy fail-closed -----------------------------------------------------
 
