@@ -140,10 +140,19 @@ internal static class QualityGate
     private static async Task<int> RunCheckAsync(
         string solutionArg, string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
     {
-        var baseline = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
+        var trusted = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
         var candidate = CandidateBaseline(solutionDir);
-        var failures = candidate.ValidateReductionOf(baseline);
         using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
+        var baseline = trusted.RetargetedTo(scan.Compilations.Select(c => c.Key), out var retargets);
+        foreach (var note in CheckReport.RetargetNotes(retargets))
+        {
+            Console.WriteLine(note);
+        }
+        if (retargets.Count > 0)
+        {
+            CheckReport.AppendStepSummary(CheckReport.RetargetMarkdown(retargets));
+        }
+        var failures = candidate.ValidateReductionOf(baseline);
 
         failures.AddRange(ScanCollector.CompareGeneratedExclusions(scan, candidate.GeneratedExclusions));
         failures.AddRange(candidate.Compare(scan.Violations));
@@ -169,8 +178,14 @@ internal static class QualityGate
     private static async Task<int> RunBaselineAsync(
         string solutionPath, string solutionDir, List<string> projects, string repoRoot, string commit)
     {
-        var baseline = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
+        var trusted = await TrustedBaselineAsync(repoRoot, commit, solutionDir);
         var candidate = CandidateBaseline(solutionDir);
+        using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
+        var baseline = trusted.RetargetedTo(scan.Compilations.Select(c => c.Key), out var retargets);
+        foreach (var note in CheckReport.RetargetNotes(retargets))
+        {
+            Console.WriteLine(note);
+        }
         var candidateFailures = candidate.ValidateReductionOf(baseline);
         if (candidateFailures.Count > 0)
         {
@@ -178,7 +193,6 @@ internal static class QualityGate
             Console.Error.WriteLine("baseline refused: candidate baseline is not a reduction of the trusted baseline");
             return 1;
         }
-        using var scan = await ScanCollector.CollectAsync(solutionPath, solutionDir, projects);
 
         var failures = ScanCollector.CompareGeneratedExclusions(scan, candidate.GeneratedExclusions);
         if (failures.Count > 0)

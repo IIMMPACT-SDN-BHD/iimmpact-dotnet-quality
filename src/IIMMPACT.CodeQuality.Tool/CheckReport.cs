@@ -30,6 +30,16 @@ internal static class CheckReport
         return lines;
     }
 
+    /// <summary>One line per project whose trusted allowances were applied to a new target framework.</summary>
+    public static List<string> RetargetNotes(IEnumerable<Retarget> retargets) =>
+        retargets.Select(r => $"{r.Project}: trusted baseline {r.From} applied to {r.To}").ToList();
+
+    public static string RetargetMarkdown(IReadOnlyList<Retarget> retargets) =>
+        retargets.Count == 0
+            ? string.Empty
+            : "### Retargeted projects\n\n"
+                + string.Join("\n", RetargetNotes(retargets).Select(note => $"- `{note}`")) + "\n";
+
     public static string PassMessage(int diagnosticCount, string commit) =>
         $"PASS: {diagnosticCount} managed diagnostic(s) within trusted baseline {commit[..12]}";
 
